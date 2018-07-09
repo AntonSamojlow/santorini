@@ -1,2 +1,2 @@
 # santorini
-tinkering with a simple AI for Santorini
+Tinkering with a simple AI for Santorini.
