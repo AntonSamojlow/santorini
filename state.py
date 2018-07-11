@@ -25,18 +25,18 @@ class state:
 |
 | Methods (described in their own docstring):              
 |   init_nborGrid, atRandom, __eq__, valid, print(file=None),
-|   evolveByMove, evolveByBuild, invertPlayers, winIn(k), loseIn(k), value, 
+|   evolveByMove, evolveByBuild(pos), invertPlayers, winIn(k), loseIn(k), value, 
 |   alphabeta(k,alpha,beta)     
 """
 
-    #--- class variables -----------------------------------------------------
+    #--- class variables ------------------------------------------------------
     nborDict = {}    
     
     class player(Flag):       
         RED, BLUE = auto(), auto()
     
-    #--- constructor and class methods ---------------------------------------
-    def __init__(self, activePlayer=None, boardheight=((0,)*5,)*5, units=None):        
+    #--- constructor and class methods ----------------------------------------
+    def __init__(self, activePlayer=None, boardheight=((0,)*5,)*5, units={}):        
         self.activePlayer = activePlayer
         self.boardheight = boardheight
         self.units = units
@@ -53,10 +53,12 @@ class state:
                         returnList.append((pos[0]+i, pos[1]+j))
             return returnList        
         # populate the dictionary
-        for i in range(0, 5):
-            for j in range(0, 5):
-                self.nborDict.update({(i,j): neighboursOf((i,j))})
-    
+        if self.nborDict.__len__() == 0:
+            for i in range(0, 5):
+                for j in range(0, 5):
+                    self.nborDict.update({(i,j): neighboursOf((i,j))})
+        else: print('[!] state.init_nborGrid() called, but nborDict is already set')
+
     @classmethod
     def atRandom(self):
         """Returns an instance with random field entries and which passes 'self.valid()'."""
@@ -141,30 +143,29 @@ class state:
             out.close()    
 
     def evolveByMove(self):
-        """Returns a list of states the active player can reach by a move."""
+        """Lists all '(s,p)', where 's' is a state the active player can reach by moving the unit at 'p'."""
         returnList = []
         for currentPos in [p for p in list(self.units.keys()) if self.units[p] == self.activePlayer]:
             for p in self.nborDict[currentPos]:
                 if self.boardheight[p[0]][p[1]] <= 3 and not p in list(self.units.keys()) \
                         and self.boardheight[p[0]][p[1]]-self.boardheight[currentPos[0]][currentPos[1]] <= 1:
-                    newUnitDict = deepcopy(self.units); 
+                    newUnitDict = deepcopy(self.units)
                     del newUnitDict[currentPos]
                     newUnitDict.update({p:self.activePlayer})
                     newstate = state(activePlayer=self.activePlayer, boardheight=self.boardheight, units=newUnitDict)
-                    returnList.append(newstate)
+                    returnList.append((newstate, p))
         return returnList
 
-    def evolveByBuild(self):
-        """Return a list of states the active player can reach by building."""
-        returnList = []
-        for currentPos in [p for p in list(self.units.keys()) if self.units[p] == self.activePlayer]:
-            for p in self.nborDict[currentPos]:
-                if self.boardheight[p[0]][p[1]] <= 3 and not p in list(self.units.keys()):
-                    newboardheight = tuple(tuple((self.boardheight[i][j]+1 if i == p[0] and j == p[1] \
-                                                                        else self.boardheight[i][j]) \
-                                                        for j in range(0, 5)) for i in range(0, 5))
-                    newstate = state(activePlayer=~self.activePlayer, boardheight=newboardheight, units=self.units)
-                    returnList.append(newstate)
+    def evolveByBuild(self, pos):
+        """Return a list of states the active player can reach by building with a unit at 'pos'."""
+        returnList = []        
+        for p in self.nborDict[pos]:
+            if self.boardheight[p[0]][p[1]] <= 3 and not p in list(self.units.keys()):
+                newboardheight = tuple(tuple((self.boardheight[i][j]+1 if i == p[0] and j == p[1] \
+                                                                    else self.boardheight[i][j]) \
+                                                    for j in range(0, 5)) for i in range(0, 5))
+                newstate = state(activePlayer=~self.activePlayer, boardheight=newboardheight, units=self.units)
+                returnList.append(newstate)
         return returnList
 
     def invertPlayers(self):
@@ -176,13 +177,13 @@ class state:
         """Returns true iff active player has a (up to) k-turn winning strategy. Searchdepth: 2k-1:"""
         if k<=0: return False       
         
-        Mset = self.evolveByMove()
-        if Mset.__len__() == 0: return False        
+        Moves = self.evolveByMove()
+        if Moves.__len__() == 0: return False        
     
-        for M in Mset:            
-            if 3 in [M.boardheight[pos[0]][pos[1]] for pos in M.units.keys()]: return True
+        for m in [M[0] for M in Moves]:
+            if 3 in [m.boardheight[pos[0]][pos[1]] for pos in m.units.keys()]: return True
                 
-        for BM in chain(*[M.evolveByBuild() for M in Mset]):                    
+        for BM in chain(*[m.evolveByBuild(p) for (m,p) in Moves]):                    
             if BM.loseIn(k-1): return True
         
         return False
@@ -190,39 +191,59 @@ class state:
     def loseIn(self, k):
         """Returns true iff for any play, the opponent has a k-turn winning strategy. Searchdepth: 2k"""
         # assuming k >= 0
-        Mset = self.evolveByMove()
-        if Mset.__len__() == 0: return True
+        Moves = self.evolveByMove()
+        if Moves.__len__() == 0: return True
         if k > 0:
-            for M in Mset:
-                if 3 in [M.boardheight[pos[0]][pos[1]] for pos in M.units.keys()]: return False
+            for m in [M[0] for M in Moves]:
+                if 3 in [m.boardheight[pos[0]][pos[1]] for pos in m.units.keys()]: return False
 
-            for BM in chain(*[M.evolveByBuild() for M in Mset]):
+            for BM in chain(*[m.evolveByBuild(p) for (m,p) in Moves]):
                 if not BM.winIn(k): return False
             return True
         
         return False
 
     def value(self):
-        """Returns estimated value of the state, from the perspective of the active(!) player."""
+        """Returns an estimated value of the state, from the perspective of the active(!) player."""
+        # Check if a player has a won. 
+        #     Does not [!] check for the non-valid situation of two units on level 3      
         for pos in self.units.keys():
             if self.boardheight[pos[0]][pos[1]] == 3:
                 if self.units[pos] == self.activePlayer: return 1
                 else: return -1
         if self.evolveByMove().__len__() == 0: return -1
-        
-        # computing some heuristic value...
-        def playersign(player):
-            if player == self.activePlayer: return 1
-            else: return -1
-        unitHeightScore = 1/6*sum([playersign(self.units[pos])*self.boardheight[pos[0]][pos[1]] \
-                                                            for pos in list(self.units.keys())])
-        possibleMoveHeightScore = 0
-        for unitPos in list(self.units.keys()):
-            for nborPos in self.nborDict[unitPos]:
-                possibleMoveHeightScore\
-                    +=1/32*playersign(self.units[unitPos])*min(3,self.boardheight[nborPos[0]][nborPos[1]])  
 
-        return 1/2*unitHeightScore+1/2*possibleMoveHeightScore        
+        # Compute some indicators 
+        Moves = self.evolveByMove()
+        turnNr = sum( chain(*[ self.boardheight[i] for i in range(0, 5)] ) ) # max: 93
+        oppPos, ownPos = [], []
+        for pos in self.units.keys():
+            if self.units[pos] == self.activePlayer: ownPos.append(pos)
+            else: oppPos.append(pos)
+        
+        # (1)   number of possible moves (min: 0, max: 16)
+        I1 = 1/16*Moves.__len__()
+        a1 = 1/3*(1/50*turnNr if turnNr <= 50 else 1)
+
+        # (2)   summed heightscore of possible moves (min: 0, max: 3*number of moves => WIN)
+        I2 = 0
+        for m in [M[0] for M in Moves]:
+            I2 += sum([int(m.units[pos] == self.activePlayer)*m.boardheight[pos[0]][pos[1]] \
+                                        for pos in list(m.units.keys())])
+        I2 = I2/(3*Moves.__len__())
+        a2 = 1/3
+
+        # (3)   number of adjacent opponents units that are not higher (min: 0, max: 2)
+        I3 = 0
+        for o in oppPos: 
+            for p in ownPos: 
+                if p in self.nborDict[o] and self.boardheight[p[0]][p[1]] >= self.boardheight[o[0]][o[1]] : 
+                    I3 += 1/2
+                    break
+        a3 = 1/3
+
+        return a1*I1 + a2*I2 + a3*I3 
+         
 
     def alphabeta(self, depth, alpha, beta):
         """Negamax-algorithm to depth k with alpha-beta pruning, values estimated by 'state.value()'."""
@@ -230,11 +251,9 @@ class state:
         if depth == 0 or  val == -1 or val == 1: return val
 
         bestval = -1
-        for BM in chain(*[M.evolveByBuild() for M in self.evolveByMove()]):
+        for BM in chain(*[m.evolveByBuild(p) for (m,p) in self.evolveByMove()]):
             bestval = max(bestval, -BM.alphabeta(depth-1, -beta, -alpha))
             alpha= max(alpha, bestval)
             if beta <= alpha: break
         return bestval
-    
-    def versionTest(self):
-        print('1.0')
+ 
