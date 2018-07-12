@@ -58,7 +58,7 @@ class game:
             turnNR += 1
             self.state.print()
             
-            if turnNR == 20 or turnNR == 50:
+            if turnNR == 10 or turnNR == 30:
                 AIsearchdepth += 1
                 print('* The AI received support from the future!')
 

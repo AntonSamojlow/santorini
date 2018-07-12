@@ -24,9 +24,9 @@ class state:
 |   - units:            A dictionary {(i,j) : player(Flag)}. Lists the units with their position and owner.      
 |
 | Methods (described in their own docstring):              
-|   init_nborGrid, atRandom, __eq__, valid, print(file=None),
-|   evolveByMove, evolveByBuild(pos), invertPlayers, winIn(k), loseIn(k), value, 
-|   alphabeta(k,alpha,beta)     
+|   init_nborGrid, atRandom, fromString(string), __eq__, toString, valid, print(file=None),
+|   evolveByMove, evolveByBuild(pos), invertPlayers, 
+|   winIn(k), loseIn(k), value, alphabeta(k,alpha,beta)     
 """
 
     #--- class variables ------------------------------------------------------
@@ -34,6 +34,7 @@ class state:
     
     class player(Flag):       
         RED, BLUE = auto(), auto()
+        
     
     #--- constructor and class methods ----------------------------------------
     def __init__(self, activePlayer=None, boardheight=((0,)*5,)*5, units={}):        
@@ -60,7 +61,7 @@ class state:
         else: print('[!] state.init_nborGrid() called, but nborDict is already set')
 
     @classmethod
-    def atRandom(self):
+    def atRandom(self, turn=None):
         """Returns an instance with random field entries and which passes 'self.valid()'."""
         activePlayer = self.player(True)
         if randint(0, 1) == 0: activePlayer = ~self.player(True)
@@ -71,9 +72,43 @@ class state:
                 if (i,j) not in units.keys(): break
             if rep < 2: units.update({(i,j) : activePlayer})
             else: units.update({(i,j) : ~activePlayer})
-        boardheight = tuple(tuple(randint(0, 2) if (i,j) in units.keys() else randint(0, 4)\
+        
+        if turn > 92: print("[!] called 'state.atRandom(turn=t)' with t > 92"); turn = 0
+
+        if turn == None:
+            boardheight = tuple(tuple(randint(0, 2) if (i,j) in units.keys() else randint(0, 4)\
                                 for j in range(0, 5)) for i in range(0, 5))
+        else:
+            filling = 0
+            bh = [[0 for i in range(0, 5)] for j in range(0, 5)]            
+            while filling < turn:
+                (row, col) = (randint(0,4), randint(0,4))                
+                if bh[row][col] < 4 - 2*int((row, col) in units.keys()):                    
+                    bh[row][col] += 1
+                    filling += 1        
+            for i in range(0,5): bh[i] = tuple(bh[i])  
+            boardheight = tuple(bh)
         return state(activePlayer=activePlayer, boardheight=boardheight, units=units)
+
+    @classmethod
+    def fromString(self, string):
+        """Returns the state from a string 'ap|u|bh', generated from state.toString(self)."""    
+        [ap, u, bh] = string.split('|')
+        plDict = {'R' : self.player.RED, 'B' : self.player.BLUE}
+        
+        activePlayer = plDict[ap]
+        units = {}
+        for i in range (0,10,3): units.update({(int(u[1+i]), int(u[2+i])) : plDict[u[0+i]] })
+        boardheight = []
+        bh = bh.split(',')
+        for row in bh: 
+            r = []
+            for j in range(0,5): r.append(int(row[j]))
+            boardheight.append(tuple(r))
+        boardheight = tuple(boardheight)
+
+        return state(activePlayer=activePlayer, units=units, boardheight=boardheight)
+
 
     #--- methods --------------------------------------------------------------
     def __eq__(self, other):
@@ -83,6 +118,18 @@ class state:
             if unitPos not in other.units.keys(): return False
             elif self.units[unitPos] != other.units[unitPos]: return False
         return True
+   
+    def toString(self):
+        """Generates a short and readable string representation 'ap|u|bh' of the state."""        
+        ap = self.activePlayer.name[0]
+        u = ''
+        bh = ''       
+        for unitPos in self.units.keys():
+            u += self.units[unitPos].name[0]+str(unitPos[0])+str(unitPos[1])        
+        for i in range(0, 5):
+            for j in range(0, 5): bh += str(self.boardheight[i][j])
+            if i < 4: bh += ','
+        return ap+'|'+u+'|'+bh
 
     def valid(self):
         """Returns true iff the instance is 'syntactically correct', as defined in the comments of this method."""
@@ -141,6 +188,7 @@ class state:
 
         if out is not sys.stdout:
             out.close()    
+
 
     def evolveByMove(self):
         """Lists all '(s,p)', where 's' is a state the active player can reach by moving the unit at 'p'."""
