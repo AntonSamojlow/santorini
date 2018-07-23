@@ -1,122 +1,56 @@
-from state import*
+from state import *
 from time import time
-class game:
-    """| class game:
-| DOCSTRING
+
+class player:
+    """| class player:
+| Blueprint for a player.
 """
-    
-    #--- constructor ----------------------------------------------------------
-    def __init__(self, activePlayer=None, boardheight=((0,)*5,)*5, units={}):        
-        self.state = state()
-        state.init_nborGrid()
-        self.HUMAN = state.player.BLUE
-        self.AI = state.player.RED
-    
-    #--- methods --------------------------------------------------------------
-    def AIplay(self, depth=2):
-        """Returns a new state, according to the play of the AI."""
-        plays = list(chain(*[m.evolveByBuild(p) for (m,p) in self.state.evolveByMove()]))
-        
-        minvalue, minplay = 1, plays[0]
-        for play in plays:
-            val = play.alphabeta(depth-1, -1, 1)
-            if val == -1: return play
-            if minvalue > val: minvalue, minplay = val, play            
-        return minplay    
-    
-    def run(self):
-        print('* --- start of game --- ')
-        print('* Playing: HUMAN as', self.HUMAN.name, 'versus the AI as', self.AI.name)
-        
-        # set starting player
-        self.state.activePlayer = self.HUMAN if bool(randint(0,2)) else self.AI
-        print('*',self.state.activePlayer.name,'starts')        
-        
-        # choose starting positions
-        freePos = [(i,j) for i in range(0,5) for j in range(0,5)]      
-        for i in range(0,4):
-            if self.state.activePlayer == self.HUMAN:
-                print('Choose a starting position for a unit...')
-                unitPos = self.inputCoord(freePos)
-                freePos.remove(unitPos)
-                self.state.units.update({unitPos : self.state.activePlayer})
-                self.state.activePlayer = ~self.state.activePlayer
-            else:
-                while True:
-                    unitPos = (randint(1,3), randint(1,3))
-                    if unitPos in freePos:
-                        freePos.remove(unitPos)
-                        self.state.units.update({unitPos : self.state.activePlayer})
-                        self.state.activePlayer = ~self.state.activePlayer
-                        print('* The AI places a unit at',unitPos)                        
-                        break
+    def __init__(self, info='random play'):     
+        self.info = info
 
-        # loop until a player has won
-        turnNR = 0  
-        AIsearchdepth = 2
-        while True:            
-            turnNR += 1
-            self.state.print()
-            
-            if turnNR == 10 or turnNR == 30:
-                AIsearchdepth += 1
-                print('* The AI received support from the future!')
+    def choseUnitPos(self, unitDic):
+        while True:
+            unitPos = (randint(0,4), randint(0,4))
+            if unitPos not in unitDic.keys(): break
+        return unitPos
 
-            if self.state.activePlayer == self.HUMAN:
-                print('* It is your turn,', self.HUMAN.name)
-                self.state = self.executePlay(*self.inputPlayFor(self.HUMAN))
-            else:
-                print('* The AI looks for human weaknesses...')
-                t0 = time()
-                self.state = self.AIplay(depth=AIsearchdepth)
-                print('*    ...and finished in only',round(time()-t0,1),'s.')
-            
-            val = self.state.value()            
-            if val == 1:
-                self.state.print()
-                if self.state.activePlayer == self.HUMAN: print('* The HUMAN player wins!')
-                else: print('* The AI crushed you!')
-                break
-            if val == -1:
-                self.state.print()
-                if self.state.activePlayer == self.AI: print('* The HUMAN player wins!')
-                else: print('* The AI crushed you!')
-                break        
-        print('')        
-        print('* --- end of game ---')
-        return None
+    def getPlay(self, state):
+        plays = state.listPlays()
+        return plays[randint(0,plays.__len__()-1)]
 
-    def inputPlayFor(self, player):
+class human(player):
+    """| class human(player):
+| A human that plays via the console.
+"""
+    def __init__(self, info='human'):     
+        self.info = info
+
+    def choseUnitPos(self, unitDic):
+        """Asks to input a unit position'."""
+        print('Choose a starting position for a unit...')
+        freePos = [(i,j) for i in range(0,5) for j in range(0,5) if (i,j) not in unitDic.keys()]
+        return self.inputCoord(freePos)
+
+    def getPlay(self, state):
+        """Asks to input a valid play for the active player and returns it as '(unit, dest, build)'."""
         unitPos, dest, build = None, None, None
 
-        unitPositions = [p for p in self.state.units.keys() if self.state.units[p] == player]        
-        unitMoves = {}
-        for unit in unitPositions:
-            moves = []
-            for p in self.state.nborDict[unit]:
-                if self.state.boardheight[p[0]][p[1]] <= 3 and not p in list(self.state.units.keys()) \
-                        and self.state.boardheight[p[0]][p[1]]-self.state.boardheight[unit[0]][unit[1]] <= 1:
-                    moves.append(p)
-            if moves.__len__() == 0: unitPositions.remove(unit)
-            else: unitMoves.update({unit : moves})
-
+        validPlays = state.listPlays()
+        unitPositions = list({u for (u, d, b) in validPlays})
         print('Choose a unit to move from', unitPositions, '...')
         unitPos = self.inputCoord(unitPositions)
         
-        print('Choose a destination from', unitMoves[unitPos], '...')
-        dest = self.inputCoord(unitMoves[unitPos])
-           
-        buildPositions = []
-        for p in self.state.nborDict[dest]:
-            if self.state.boardheight[p[0]][p[1]] <= 3 and (p==unitPos or not p in list(self.state.units.keys())):
-                buildPositions.append(p)
-      
+        destinations = [d for (u, d, b) in validPlays if u == unitPos]
+        print('Choose a destination from', destinations, '...')
+        dest = self.inputCoord(destinations)
+            
+        buildPositions = [b for (u, d, b) in validPlays if u == unitPos and d == dest]
         print('Choose where to build from', buildPositions, '...')
         build = self.inputCoord(buildPositions)
-
         return (unitPos, dest, build)
 
-    def inputCoord(self, validList):
+    def inputCoord(self, validList):        
+        """Asks to input a coordinate from 'validList'."""
         error = "[!] Valid coordinates are 'xy' with x=row, y=column being integers in [0,4].\
                 \nTry again..."
 
@@ -138,13 +72,80 @@ class game:
             else:
                 return (x,y)
 
-    def executePlay(self, unitPos, dest, build):
-        newUnitDict = deepcopy(self.state.units)
-        del newUnitDict[unitPos]
-        newUnitDict.update({dest : self.state.activePlayer}) 
-        newboardheight = tuple(tuple((self.state.boardheight[i][j]+1 if i == build[0] and j == build[1] \
-                                                                    else self.state.boardheight[i][j]) \
-                                                    for j in range(0, 5)) for i in range(0, 5))
-        return state(activePlayer=~self.state.activePlayer, boardheight=newboardheight, units=newUnitDict)
-      
-    
+
+class game:
+    """| class game:
+| Performs a game between two players when calling __init__((firstplayer, secondplayer)).
+| Class variables:
+|   - nborDict          A dictionary {(i,j) : [(i,j),...]}, for lookup of neighbor positions.    
+| Instance variables:   
+|   - startState:       The starting state after the units have been positioned
+|   - players:          Tuple (firstplayer, secondplayer). Note the first player has index 0, the second index 1
+|   - plays:            List of plays made, which are of the form (unit, dest, build)
+|   - result            Equals 1 (2) if the first (second) player has won.
+|   - playtime          Time it tool to compute the plays
+|
+| Methods (described in their own docstring):              
+|   save(file)
+"""
+    #--- constructor and class methods ----------------------------------------
+    def __init__(self, players, startState=None, printProgress=False):        
+        self.startState = startState if startState is not None else state()       
+        self.players = players  # 
+        self.plays = []
+        self.result = 0     
+        self.playtime = 0
+
+
+        if(printProgress): 
+            print('* start of game')
+            print('* first player:', self.players[0].info)
+            print('* second player:', self.players[1].info)
+
+        if self.startState.unitDic.__len__() == 0:
+            unitDic = {}          
+            for i in range(0, 2):
+                for playerNr in range(0, 2):
+                    unitPos = self.players[playerNr].choseUnitPos(unitDic)
+                    unitDic[unitPos] = not bool(playerNr)         
+            self.startState.unitDic = unitDic
+
+        currentstate = self.startState        
+        if(printProgress): currentstate.print(playerInitials={True:'A', False:'B'})
+
+        activeplayer = self.players[0]
+        t0 = time()
+        while True:
+            play = activeplayer.getPlay(currentstate)
+            self.plays.append(play)
+            currentstate = currentstate.executePlay(play)
+            
+            activeplayer = self.players[int(not bool(self.players.index(activeplayer)))]
+            if(printProgress): currentstate.print(playerInitials={activeplayer == self.players[0]:'A', \
+                                                                         not activeplayer == self.players[0]:'B'})
+            
+
+            v = currentstate.value()
+            if v == -1 or v == 1:
+                self.result = 1 + int(bool(self.players.index(activeplayer)) == bool((1+v)/2))
+                if(printProgress): print('* Player', self.result, 'won!')
+                self.playtime = round(time()-t0,3)
+                break
+
+    #--- methods --------------------------------------------------------------   
+
+    def save(self, file, format='text'):
+        """Appends the game information to a file."""
+        if format == 'text':
+            with open(file, 'a', newline = None) as f:
+                f.write('\n')
+                f.write('1st player:  '+self.players[0].info+'\n')
+                f.write('2nd player:  '+self.players[1].info+'\n')
+                f.write('winner:      '+str(self.result)+'\n')
+                f.write('start state: '+self.startState.toString()+'\n')
+                strPlays = ''.join(str(P) for P in self.plays ).replace(')(','|')
+                strPlays =  strPlays.replace(',','').replace(')','').replace('(','').replace(' ','')
+                f.write('plays:       '+strPlays+'\n')
+                f.write('playtime:    '+str(self.playtime)+' s\n')
+                
+                
