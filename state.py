@@ -1,34 +1,23 @@
-# To Do:
-#   - add a logger, see https://docs.python.org/3/howto/logging.html#logging-basic-tutorial
-#   - a methods that checks two states for symmetries: 
-#          90 degree -rotations, mirroring (diagonals, horizontal, vertical)
-
 from random import randint
 import sys
-#------------------------------------------------------------------------------
-# the main class
-#------------------------------------------------------------------------------
 
 class state:
-    """| class state:
-| Provides tools to check, analyse, display and save/export a Santorini gamestate.
-| Class variables:
-|   - abTable           Transposition table {state.toString() : (depth, falg, score, play)} for alphabeta-searches
-|   - nborDict          A dictionary {(i,j) : [(i,j),...]}, for lookup of neighbor positions.    
-| Instance variables:   
-|   - boardheight:      A 5x5-tuple with integer values between 0 and 4.
-|   - units:            A dictionary {(i,j) : bool}, positions as key and entry True iff owner is the active player.      
-|
-| Methods (described in their own docstring):              
-|   atRandom, fromString(string), __eq__, toString, valid, print(file=None),
-|   listMoves, generateMove, listPlays, generatePlay,
-|   winIn(k), loseIn(k), value, ab(depth,alpha,beta), ab_order(depth,alpha,beta,sortfunction),
-|   ab_order_table(depth,alpha,beta,sortfunction)       
+    """class state:
+Provides tools to check, display and save/export a Santorini gamestate.
+Class variables:
+  - nborDict          A dictionary {(i,j) : [(i,j),...]}, for lookup of neighbor positions.    
+Instance variables:   
+  - boardheight:      A 5x5-tuple with integer values between 0 and 4.
+  - units:            A dictionary {(i,j) : bool}, positions as key and entry True iff owner is the active player.      
+Methods (described in their own docstring):              
+  atRandom, fromString(string), __eq__, toString, equivClass, reprString, print(file=None),
+  listMoves, executeMove, listPlays, executePlay, winIn(k), loseIn(k), score, heuristicValue 
+Written by Anton Samojlow, August 2018
 """
 
     #--- class variables ------------------------------------------------------
-    abTable = {} 
-
+    
+    # The following dict is preset for a 5x5 board. For a state wrt other board sizes, call state.resetNborDict().
     nborDict = {(0, 0): [(0, 1), (1, 0), (1, 1)], 
                 (0, 1): [(0, 0), (0, 2), (1, 0), (1, 1), (1, 2)], 
                 (0, 2): [(0, 1), (0, 3), (1, 1), (1, 2), (1, 3)],
@@ -55,35 +44,36 @@ class state:
                 (4, 3): [(3, 2), (3, 3), (3, 4), (4, 2), (4, 4)], 
                 (4, 4): [(3, 3), (3, 4), (4, 3)]}   
     
+
     #--- constructor and class methods ----------------------------------------
     def __init__(self, boardheight=((0,)*5,)*5, unitDic={}):        
         self.boardheight = boardheight
         self.unitDic = unitDic
-        
+
     @classmethod
-    def atRandom(self, turn=None):
+    def atRandom(self, turn=None, unitsPP=2, rows=5, cols=5):
         """Returns an instance with random field entries and which passes 'self.valid()'."""
         unitDic={}
-        for rep in range(0,4):
+        for rep in range(0,2*unitsPP):
             while True: 
-                i, j = randint(0,4), randint(0,4)
+                i, j = randint(0,rows-1), randint(0,cols-1)
                 if (i,j) not in unitDic.keys(): break
-            if rep < 2: unitDic[(i,j)] = True
+            if rep < unitsPP: unitDic[(i,j)] = True
             else: unitDic[(i,j)] = False
-
-        if turn == None or turn > 92:
-            boardheight = tuple(tuple(randint(0, 2) if (i,j) in unitDic.keys() else randint(0, 4)\
-                                for j in range(0, 5)) for i in range(0, 5))
+        
+        maxTurns = 1+4*(rows*cols-unitsPP)
+        if turn == None or turn > maxTurns:
+            boardheight = tuple(tuple(randint(0, 2) if (row,col) in unitDic.keys() else randint(0, 4)\
+                                for col in range(0, cols)) for row in range(0, rows))
         else:
             filling = 0
-            bh = [[0 for i in range(0, 5)] for j in range(0, 5)]            
+            bh = [[0 for col in range(0, cols)] for row in range(0, rows)]   
             while filling < turn:
-                (row, col) = (randint(0,4), randint(0,4))                
+                (row, col) = (randint(0,rows-1), randint(0,cols-1))  
                 if bh[row][col] < 4 - 2*int((row, col) in unitDic.keys()):                    
                     bh[row][col] += 1
                     filling += 1        
-            for i in range(0,5): bh[i] = tuple(bh[i])  
-            boardheight = tuple(bh)
+            boardheight = tuple( tuple(bh[row][col] for col in range(0,cols)) for row in range(0,rows))
         return state(boardheight=boardheight, unitDic=unitDic)
 
     @classmethod
@@ -92,18 +82,12 @@ class state:
         [bh, u] = string.split('|')
 
         unitDic = {}
-        unitDic[(int(u[0]), int(u[1]))] = True
-        unitDic[(int(u[2]), int(u[3]))] = True
-        unitDic[(int(u[4]), int(u[5]))] = False
-        unitDic[(int(u[6]), int(u[7]))] = False
-
-        boardheight = []
-        bh = bh.split(',')
-        for row in bh: 
-            r = []
-            for j in range(0,5): r.append(int(row[j]))
-            boardheight.append(tuple(r))
-        boardheight = tuple(boardheight)
+        unitsPP = int(u.__len__()/2)        
+        for j in range(0, 2*unitsPP, 2): 
+            unitDic[(int(u[0 + j]), int(u[1 + j]))] = bool(j<unitsPP)
+       
+        bh = bh.split(',')       
+        boardheight = tuple(tuple( int(entry) for entry in row ) for row in bh)
 
         return state(unitDic=unitDic, boardheight=boardheight)
 
@@ -112,77 +96,67 @@ class state:
     def toString(self):
         """Generates a short and readable string-ID 'boardheight|unitpos' of the state."""        
         u = ''
-        bh = ''
         units_player = sorted([pos for pos in self.unitDic.keys() if self.unitDic[pos]], \
                                                     key=lambda k: (k[0], k[1]))
         units_opponent = sorted([pos for pos in self.unitDic.keys() if not self.unitDic[pos]],\
                                                     key=lambda k: (k[0], k[1]))
-             
         for pos in units_player:
             u += str(pos[0])+str(pos[1])    
         for pos in units_opponent:
             u += str(pos[0])+str(pos[1])     
 
-        for i in range(0, 5):
-            for j in range(0, 5): bh += str(self.boardheight[i][j])
-            if i < 4: bh += ','
+        bh = ''        
+        for row in range(0, self.boardheight.__len__()):
+            for col in range(0, self.boardheight[row].__len__()): bh += str(self.boardheight[row][col])
+            if row < self.boardheight.__len__()-1: bh += ','
         return bh+'|'+u    
     
     def __eq__(self, other):
         """Overriding default: Returns true iff the fields entries agree irresp of the ordering of 'units'."""
         return self.toString() == other.toString()
-   
-    def valid(self):
-        """Returns true iff the instance is 'syntactically correct', as defined in the comments of this method."""
-        #   1) boardheight is a 5x5 tuple with values in {0,1,2,3,4}
-        if not (isinstance(self.boardheight, tuple) and self.boardheight.__len__() == 5):
-            return False
-        else:
-            for row in self.boardheight:
-                if not (isinstance(row, tuple) and row.__len__() == 5):
-                    return False
-                else:
-                    for pos in row:
-                        if pos not in range(0, 5, 1):
-                            return False
 
-        #   2) units is a dict with keys '(i,j)' and boolean entries
-        if not (isinstance(self.unitDic, dict) and self.unitDic.__len__() == 4):
-            return False
-        else:
-            for posKey in self.unitDic.keys():
-                if not (isinstance(posKey, tuple) and posKey.__len__() == 2\
-                                            and isinstance(self.unitDic[posKey], bool)):
-                    return False
-                elif not (posKey[0] in range(0, 5, 1) and posKey[1] in range(0, 5, 1)):
-                    return False
 
-        #   3) each player should have exactly two units
-        if not (list(self.unitDic.values()).count(True) == 2 \
-                and list(self.unitDic.values()).count(False) == 2):
-            return False
 
-        #   4) units are not allowed on a boardheight of level 4 or 3 (winning situation)
-        for pos in self.unitDic.keys():
-            if self.boardheight[pos[0]][pos[1]] >= 3:
-                return False
+    def equivClass(self):
+        """Lists all symmetrically equivalent states for a SQUARE board. [!] Can (rarely) contain duplicates."""
+        def H(p): return (self.boardheight.__len__() -1 -p[0], p[1])
+        def D(p): return (p[1], p[0])
+        symTrafos = [D, lambda p: H(D(p)), lambda p: D(H(D(p))), lambda p: H(D(H(D(p)))),
+                     H, lambda p: D(H(p)), lambda p: H(D(H(p))), lambda p: p]
 
-        # All the problems should (!) have been caught, so we return TRUE
-        return True
+        def transformBy(trafo, s=self):
+            newbh = [[0 for col in range(0,s.boardheight[0].__len__())] for row in range(0,s.boardheight.__len__())]
+            for row in range(0,s.boardheight.__len__()):
+                for col in range(0,s.boardheight[0].__len__()):
+                    newbh[trafo((row,col))[0]][trafo((row,col))[1]] = s.boardheight[row][col] 
+            newbh = tuple( tuple(row) for row in newbh)
+            newunits = {trafo(unitPos) : s.unitDic[unitPos] for unitPos in s.unitDic.keys()}
+            return state(boardheight=newbh, unitDic=newunits)        
+        return [transformBy(trafo) for trafo in symTrafos]
 
-    def print(self, file=None, playerInitials={ True: 'p' , False: 'o'}):
+    def reprString(self):
+        """Returns the self.string() from equivClass which is lowest wrt alphabetical order."""
+        return sorted([s.toString() for s in self.equivClass()])[0]
+
+
+    def print(self, file=None, playerInitials={ True: 'P' , False: 'O'}):
         """Outputs a representation of the state to sys.stdout, or optionally to 'file'."""
+        rows = self.boardheight.__len__()
+        cols = self.boardheight[0].__len__()
+
         out = open(file, 'a', encoding='utf-8', newline=None ) if file else sys.stdout        
-        for i in range(0,15): out.write('-')
+        for i in range(0, int(3*cols/2) -1 ): out.write('-')
+        out.write(playerInitials[True])
+        for i in range(0, int(1/2+ 3*cols/2) -1): out.write('-')
         out.write('\n')
-        for i in range(0, 5):
-            for j in range(0, 5):
-                if (i,j) in self.unitDic.keys():                     
-                    out.write(playerInitials[self.unitDic[(i,j)]])
+        for row in range(0, rows):
+            for col in range(0, cols):
+                if (row,col) in self.unitDic.keys():                     
+                    out.write(playerInitials[self.unitDic[(row,col)]])
                 else: out.write(' ')
-                out.write(str(self.boardheight[i][j])+' ')                                    
+                out.write(str(self.boardheight[row][col])+' ')                                    
             out.write('\n')
-        for i in range(0,15): out.write('-')
+        for i in range(0,3*cols): out.write('-')
         out.write('\n')
 
         if out is not sys.stdout:
@@ -212,7 +186,7 @@ class state:
         moves = self.listMoves()        
         for move in moves:
             plays.append((move[0],move[1],move[0]))
-            for buildPos in self.nborDict[move[1]]:
+            for buildPos in self.nborDict[move[1]]:            
                 if self.boardheight[buildPos[0]][buildPos[1]] != 4\
                         and buildPos not in list(self.unitDic.keys()):
                     plays.append((move[0],move[1],buildPos))
@@ -223,9 +197,10 @@ class state:
         (unitPos, dest, build) = play
         newunitDic = {pos : not self.unitDic[pos] for pos in self.unitDic.keys() if pos != unitPos}
         newunitDic[dest] = False
-        newboardheight = tuple(tuple((self.boardheight[i][j]+1 if (i, j) == (build[0], build[1]) \
-                                                                    else self.boardheight[i][j]) \
-                                                    for j in range(0, 5)) for i in range(0, 5))
+        newboardheight = tuple(tuple((self.boardheight[row][col]+1 if (row, col) == (build[0], build[1]) \
+                                                                    else self.boardheight[row][col]) \
+                                      for col in range(0, self.boardheight[0].__len__())) 
+                                for row in range(0, self.boardheight.__len__()))
         return state(boardheight=newboardheight, unitDic=newunitDic)       
 
     def winIn(self, k):     
@@ -257,22 +232,40 @@ class state:
             return True
         
         return False
-
-    def value(self):
-        """Returns an estimated value of the state, from the perspective of the active(!) player."""
-        # Check if a player has a won. 
-        #     Does not [!] check for the non-valid situation of two units on level 3      
+    
+    def resetNborDict(self):
+        """Resets the class variable state.nborDict based on the dimensions of the calling state."""   
+        rows, cols = self.boardheight.__len__(), self.boardheight[0].__len__()
+        self.nborDict.clear()
+        for row in range(0,rows):
+            for col in range(0,cols):
+                nbors=[]
+                for var in [(-1,-1),(-1,0),(-1,1),(0,1),(1,1),(1,0),(1,-1),(0,-1)]:
+                    if row+var[0] >=0 and row+var[0] < rows and col+var[1] >=0 and col+var[1] < cols:
+                        nbors.append((row+var[0],col+var[1]))
+                self.nborDict.update({(row,col) : nbors})
+    
+    def score(self):
+        """Returns +1/-1 if active player won/lost, 0 else. [!] Inconsistent if two or more units are on level 3."""        
         for pos in self.unitDic.keys():
             if self.boardheight[pos[0]][pos[1]] == 3: return -1+2*int(self.unitDic[pos])               
         if self.listMoves().__len__() == 0: return -1
+        return 0         
+
+    def heuristicValue(self):
+        """Returns a heuristic value of the gamestate, from the perspective of the active(!) player."""
+        # Check if a player has a won. 
+        #     Does not [!] check for the non-valid situation of two units on level 3      
+        score = self.score()
+        if score != 0: return score
 
         # Compute some indicators 
         Moves = self.listMoves()
         turnNr = sum( [ sum(self.boardheight[i]) for i in range(0, 5)] ) # max: 93
-        
+
         units_player = [pos for pos in self.unitDic.keys() if self.unitDic[pos]]
         units_opponent = [pos for pos in self.unitDic.keys() if not self.unitDic[pos]]
-        
+
         # (1)   number of possible moves (min: 0, max: 16)
         I1 = 1/16*Moves.__len__()
         a1 = 1/3*(1/50*turnNr if turnNr <= 50 else 1)
@@ -293,66 +286,4 @@ class state:
                     I3 += 1/2
                     break
         a3 = 1/3
-
         return a1*I1 + a2*I2 + a3*I3 
-        
-
-    def ab(self, depth, alpha=-1, beta=1):
-        """Simple alphabeta. Returns (v,p), where p=play that leads to v='ab()'."""
-        bestval = self.value()
-        if depth == 0 or  bestval == -1 or bestval == 1: return (bestval, None)
-        
-        bestval, bestplay = -1, None
-        plays = self.listPlays()
-        for play in plays:
-            val =  -self.executePlay(play).ab(depth-1, alpha=-beta, beta=-max(alpha, bestval))[0]
-            if val >= bestval: bestval, bestplay = val, play
-            if bestval >= beta: break
-        
-        return (bestval, bestplay)
-
-    def ab_order(self, depth, alpha=-1, beta=1, sortfunction = lambda playdata: playdata[1].value()):
-        """Alphabeta with ordering. Returns (v,p), where p=play that leads to v='ab()'."""
-        bestval = self.value()
-        if depth == 0 or  bestval == -1 or bestval == 1: return (bestval, None)
-        
-        bestval, bestplay = -1, None
-        playdata = sorted([(P,self.executePlay(P)) for P in self.listPlays()] , key=sortfunction) 
-        for (play,newstate) in playdata:
-            val =  -newstate.ab_order(depth-1, alpha=-beta, beta=-max(alpha, bestval), 
-                                                    sortfunction = sortfunction)[0]
-            if val >= bestval: bestval, bestplay = val, play
-            if bestval >= beta: break
-        
-        return (bestval, bestplay)
-
-
-    def ab_order_table(self, depth, alpha=-1, beta=1, sortfunction = lambda playdata: playdata[1].value()):
-        """Alphabeta with ordering and transposition table. Returns (v,p), where p=play that leads to v='ab()'."""
-        bestval = self.value()
-        if depth == 0 or  bestval == -1 or bestval == 1: return (bestval, None)
-                    
-        ID = self.toString()
-        if ID in self.abTable.keys():
-            (d, flag, score, play) = self.abTable[ID]
-            if d >= depth:
-                if flag == 'exact': return (score, play)
-                elif flag == 'lowerbound': alpha = max(alpha, score)
-                elif flag == 'upperbound': beta = min(beta, score)
-        
-        bestval, bestplay = -1, None
-        playdata = sorted([(P,self.executePlay(P)) for P in self.listPlays()] , key=sortfunction) 
-        for (play,newstate) in playdata:
-            val =  -newstate.ab_order_table(depth-1, alpha=-beta, beta=-max(alpha, bestval), 
-                                                    sortfunction = sortfunction)[0]
-            if val >= bestval: bestval, bestplay = val, play
-            if bestval >= beta: break
-        
-        d, flag, score, play = depth, 'exact', bestval, bestplay
-        if bestval <= alpha:
-            flag = 'upperbound'
-        elif bestval >= beta:
-            flag = 'lowerbound'
-        self.abTable[ID]=(d,flag,score,play)
-
-        return (bestval, bestplay)

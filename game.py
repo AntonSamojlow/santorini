@@ -2,8 +2,8 @@ from state import *
 from time import time
 
 class player:
-    """| class player:
-| Blueprint for a player.
+    """class player:
+Blueprint for a player.
 """
     def __init__(self, info='random play'):     
         self.info = info
@@ -18,9 +18,9 @@ class player:
         plays = state.listPlays()
         return plays[randint(0,plays.__len__()-1)]
 
-class human(player):
-    """| class human(player):
-| A human that plays via the console.
+class humanConsole(player):
+    """class human(player):
+A human that plays via the console.
 """
     def __init__(self, info='human'):     
         self.info = info
@@ -74,19 +74,19 @@ class human(player):
 
 
 class game:
-    """| class game:
-| Performs a game between two players when calling __init__((firstplayer, secondplayer)).
-| Class variables:
-|   - nborDict          A dictionary {(i,j) : [(i,j),...]}, for lookup of neighbor positions.    
-| Instance variables:   
-|   - startState:       The starting state after the units have been positioned
-|   - players:          Tuple (firstplayer, secondplayer). Note the first player has index 0, the second index 1
-|   - plays:            List of plays made, which are of the form (unit, dest, build)
-|   - result            Equals 1 (2) if the first (second) player has won.
-|   - playtime          Time it tool to compute the plays
-|
-| Methods (described in their own docstring):              
-|   save(file)
+    """class game:
+Performs a game between two players when calling __init__((firstplayer, secondplayer)).
+Note that this version currently only supports 5x5-boards
+Class variables:
+  - nborDict          A dictionary {(i,j) : [(i,j),...]}, for lookup of neighbor positions.    
+Instance variables:   
+  - startState:       The starting state after the units have been positioned
+  - players:          Tuple (firstplayer, secondplayer). Note the first player has index 0, the second index 1
+  - plays:            List of plays made, which are of the form (unit, dest, build)
+  - result            Equals 1 (2) if the first (second) player has won.
+  - playtime          Time it tool to compute the plays
+Methods (described in their own docstring):              
+  save(file)
 """
     #--- constructor and class methods ----------------------------------------
     def __init__(self, players, startState=None, printProgress=False):        
@@ -125,7 +125,7 @@ class game:
                                                                          not activeplayer == self.players[0]:'B'})
             
 
-            v = currentstate.value()
+            v = currentstate.score()
             if v == -1 or v == 1:
                 self.result = 1 + int(bool(self.players.index(activeplayer)) == bool((1+v)/2))
                 if(printProgress): print('* Player', self.result, 'won!')
