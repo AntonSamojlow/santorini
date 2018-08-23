@@ -4,7 +4,7 @@ from random import shuffle, choice
 
 
 class MCTS:
-    """class alphabeta:
+    """class mcts:
 Implements a basic Monte Carlo tree search with LCB (lower confidence bound, 
 since we seek to [!] MINIMIZE [!] the opponents winning chance).
 Required instance variables, to be passed on __init__:
