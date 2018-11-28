@@ -14,16 +14,16 @@ Required instance variables, to be passed on __init__:
   - isWinningLeaf:  A function: node n -> True iff 'n = win', else False
 Optional instance variables: '
   - LCB_cst:        Constant of the UCB1-algorithm, defaults to 2
-  - statistics:     Saved statistics can be passed here, defaults to empty dict
+  - statistics:     Saved statistics can be passed here, default: empty dict
 Methods (described in their own docstring):
-  run, printStats
+  run_counted, run_timed, printStats
 Written by Anton Samojlow, August 2018             
 """
 
     def __init__(self, getChildren_fct, getRandomChild_fct, 
-                 isTerminal_fct, isWin_fct, statistics={}, LCB_cst=2):
-        
-        self.statistics = statistics       
+                 isTerminal_fct, isWin_fct, statistics=None, LCB_cst=2):
+        if statistics == None: self.statistics = {}
+        else: self.statistics = statistics
         self.LCB_cst = LCB_cst
 
         self.getChildren = getChildren_fct
@@ -31,7 +31,7 @@ Written by Anton Samojlow, August 2018
         self.isTerminal = isTerminal_fct
         self.isWininingLeaf = isWin_fct
 
-    def run(self, root, maxSec):
+    def run_counted(self, root, maxIter, verbose=False):
         """Runs the MC tree search for maxSec."""
         def LCB(node):
             (v,n) = self.statistics[node]
@@ -43,8 +43,7 @@ Written by Anton Samojlow, August 2018
             shuffle(children)
             for child in children:
                 if child not in self.statistics.keys():
-                    return [parent, child] 
-            
+                    return [parent, child]
             return [parent] + select(min(children, key=LCB))
         
         def simulate(parent):
@@ -57,8 +56,55 @@ Written by Anton Samojlow, August 2018
 
         if root in self.statistics.keys(): Nplays = self.statistics[root][1]
         else: Nplays = 0 
+        if verbose: print('* Running MCTS for', maxIter, 'simulations...')
         t0=time()
-        print('* Running MCTS for', maxSec, 'seconds...')
+        
+        for i in range(0, maxIter):
+            record = []
+            Nplays += 1    
+
+            record += select(root)
+            leaf = record[-1] 
+
+            if not self.isTerminal(leaf): 
+                record += simulate(leaf)  
+            
+            rootPlayerWon = (self.isWininingLeaf(record[-1])) != (record.__len__() % 2 == 0)
+
+            for i in range(0, record.__len__()):
+                if record[i] not in self.statistics.keys(): self.statistics.update({record[i]: [0,0]})
+                self.statistics[record[i]][1] += 1
+                if rootPlayerWon == (i % 2 == 0):
+                    self.statistics[record[i]][0] += 1
+    
+
+    def run_timed(self, root, maxSec, verbose=False):
+        """Runs the MC tree search for maxSec."""
+        def LCB(node):
+            (v,n) = self.statistics[node]
+            return v/n - sqrt(self.LCB_cst*log(Nplays)/n)
+        
+        def select(parent):
+            if self.isTerminal(parent): return [parent]
+            children = self.getChildren(parent)
+            shuffle(children)
+            for child in children:
+                if child not in self.statistics.keys():
+                    return [parent, child]
+            return [parent] + select(min(children, key=LCB))
+        
+        def simulate(parent):
+            currentnode = parent
+            randomplays = [currentnode]
+            while not self.isTerminal(currentnode):
+                currentnode = self.getRandomChild(currentnode)
+                randomplays.append(currentnode)            
+            return randomplays
+
+        if root in self.statistics.keys(): Nplays = self.statistics[root][1]
+        else: Nplays = 0 
+        if verbose: print('* Running MCTS for', maxSec, 'seconds...')
+        t0=time()
         
         while time() - t0  < maxSec:   
             record = []
