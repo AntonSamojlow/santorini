@@ -1,6 +1,6 @@
 class alphabeta():    
     """class alphabeta:
-Implements the alphabeta search for a two-player game. Assumes that the value 
+Implements the alphabeta search for two-player games. Assumes that the value 
 of 'gamestate' is always given from the active players perspective and that
 -1 = loss, +1 = win. 
 Required instance variables, to be passed on __init__:   
