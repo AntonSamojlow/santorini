@@ -1,12 +1,12 @@
 """
-Collection of Tree Search (TS) algorithms for two-player zero-sum games.
+Collection of Tree Search (TS) algorithms for two-player games.
 
 Written by Anton Samojlow, December 2018. [anton.samojlow@web.de]
 ...
 """
 from math import sqrt, log
 from time import time
-from random import shuffle, choice
+from random import choice, shuffle
 
 class Node():
     """
@@ -14,8 +14,8 @@ class Node():
 
     Assumptions:
         1. The tree is defined by overriding two functions,
-        - init_value:   Initialises the attribute Node.value. On input Node n,
-                        it assigns to n.value in between -1 and -1.
+        - init_value:   Used to onitialise the attribute Node.value.
+                        On input Node n, returns a number between -1 and -1.
         - grow: Expands the tree by one level from the given node. On input
                 Node n, assigns to n.children the list of child Nodes [c,...]
                 such that c.children = [] and c.parent = n.
@@ -153,7 +153,7 @@ class MCTS_LCB(SEU):
     """
     Monte-Carlo TS with selection via the LCB1-algorithm for a zero-sum game.
 
-    For a Node n, is sets n.value to an estimate of the best value V,
+    For a Node n, it sets n.value to an estimate of the best value V,
     given that both players play optimal.
 
     Attributes:
@@ -173,7 +173,7 @@ class MCTS_LCB(SEU):
         self.LCB_cst = LCB_cst
 
     def select(self, node, N=None):
-        if N == None: N = node.visits # set N if select is called on root
+        if N == None: N = 1 + node.visits # set N if select is called on root
         if node.children == []: return [node]
         LCB = lambda node : node.value -\
                                 sqrt(self.LCB_cst*log(N)/(1+node.visits))
@@ -187,9 +187,9 @@ class MCTS_LCB(SEU):
             path[i].value += (2*int(i_winner)-1 -path[i].value)/path[i].visits
         path[-1].visits += 1
 
-class alphabeta():
+class Alphabeta():
     """
-    Implements alphabeta search algorithms.
+    Implements alphabeta search algorithms for zero-sum games.
 
     Computes the child that maximizes the attainable Node.value for the
     active player in 'depth' turns, given that the opponent plays equally.
@@ -209,11 +209,13 @@ class alphabeta():
         compatible with the tree that is about to be analyzed.
 
     Methods:
-        basic(moveordered=False), tabled(moveordered=False)
+        basic, tabled:  Both Take optional boolean arguments 'moveordered'
+                        and 'shuffled', which default to False. In case
+                        of moverordered=True, shuffled is ignored.
 
     Usage Example:
         E = ExampleTree('root')
-        result = ab.basic(E, 3)
+        result = Alphabeta().basic(E, 3)
         print(result[0], result[1].name)
     """
     def __init__(self, sort_fct=None , table=None):
@@ -223,10 +225,16 @@ class alphabeta():
         if table == None: self.table = {}
         else: self.table = table
 
-    def basic(self, node, depth, alpha=-1, beta=1, moveordered=False):
-        """Basic alphabeta algorithm. Returns (value, child).
+    def basic(self, node, depth, _alpha=-1, _beta=1,
+                moveordered=False, shuffled=False):
+        """Basic alphabeta algorithm.
 
-        If moveordered=True, self.sort_fct will be used.
+        Returns:    (bestvalue (float), bestchild (Node)).
+
+        Arguments:
+            moveordered (bool, default False):  Uses self.sort_fct iff True
+            shuffled (bool, default False):     Randomizes child order
+                                                iff True AND moveordred=False
         """
         if depth == 0: return (node.value, None)
         if node.children == []:
@@ -234,20 +242,30 @@ class alphabeta():
             else: node.grow()
 
         bestval, bestchild = -1, None
-        if moveordered: children = sorted(node.children, key = self.sort_fct)
-        else: children = node.children
+        if moveordered:
+            children = sorted(node.children, key = self.sort_fct)
+        else:
+            children = node.children
+            if shuffled: shuffle(children)
 
         for child in children:
             val = - self.basic(child, depth-1,
-                             alpha=-beta, beta=-max(alpha, bestval))[0]
+                             _alpha=-_beta, _beta=-max(_alpha, bestval),
+                             moveordered=moveordered, shuffled=shuffled)[0]
             if val >= bestval: bestval, bestchild = val, child
-            if bestval >= beta: break
+            if bestval >= _beta: break
         return (bestval, bestchild)
 
-    def tabled(self, node, depth, alpha=-1, beta=1, moveordered=False):
-        """Alphabeta with transposition table. Returns (value, play).
+    def tabled(self, node, depth, _alpha=-1, _beta=1,
+                moveordered=False, shuffled=False):
+        """Alphabeta with transposition table.
 
-         If moveordered=True, self.sort_fct will be used.
+        Returns:    (bestvalue (float), bestchild (Node)).
+
+        Arguments:
+            moveordered (bool, default False):  Uses self.sort_fct iff True
+            shuffled (bool, default False):     Randomizes child order
+                                                iff True AND moveordred=False
         """
         if depth == 0: return (node.value, None)
         if node.children == []:
@@ -257,27 +275,36 @@ class alphabeta():
         if node.name in self.table.keys():
             (d, flag, score, play) = self.table[node.name]
             if d >= depth:
-                if flag == 'exact':
-                    bestchild = next(child for child in node.children
-                                        if child.name == play)
+                if flag == 'lowerbound': _alpha = max(_alpha, score)
+                elif flag == 'upperbound': _beta = min(_beta, score)
+                # the stored bounds might imply a beta-cutoff:
+                if flag == 'exact' or _alpha >= _beta:
+                    if play == None:  bestchild = None
+                    else: bestchild = next(child for child in node.children
+                                                    if child.name == play)
                     return (score, bestchild)
-                elif flag == 'lowerbound': alpha = max(alpha, score)
-                elif flag == 'upperbound': beta = min(beta, score)
+
         bestval, bestchild = -1, None
 
-        if moveordered: children = sorted(node.children, key = self.sort_fct)
-        else: children = node.children
+        if moveordered:
+            children = sorted(node.children, key = self.sort_fct)
+        else:
+            children = node.children
+            if shuffled: shuffle(children)
 
         for child in children:
             val = - self.tabled(child, depth-1,
-                            alpha=-beta, beta=-max(alpha, bestval))[0]
+                            _alpha=-_beta, _beta=-max(_alpha, bestval),
+                            moveordered=moveordered, shuffled=shuffled)[0]
             if val >= bestval: bestval, bestchild = val, child
-            if bestval >= beta: break
+            if bestval >= _beta: break
 
-        d, flag, score, play = depth, 'exact', bestval, bestchild.name
-        if bestval <= alpha:
+        d, flag, score = depth, 'exact', bestval,
+        play = None if bestchild == None else bestchild.name
+
+        if bestval <= _alpha:    # 'beta'-cutoff appeared for some child
             flag = 'upperbound'
-        elif bestval >= beta:
+        elif bestval >= _beta:   # beta-cutoff appeared at this node
             flag = 'lowerbound'
         self.table[node.name]=(d, flag, score, play)
 

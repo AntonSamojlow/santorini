@@ -41,8 +41,8 @@ class State():
 
     Attributes:
         board:          A dictionary {(row, col) : heightlevel (int)}
-        unitsPlayer:    A list [(row, col), ...])
-        unitsOpponent:  A list [(row, col), ...])
+        units_player:    A list [(row, col), ...])
+        units_opponent:  A list [(row, col), ...])
 
     Methods:
         string, array, print,
@@ -127,7 +127,6 @@ class State():
         if out is not sys.stdout:
             out.close()
 
-
 class Environment():
     """Represents the abstract game environment.
 
@@ -135,6 +134,11 @@ class Environment():
         dimension (int, default=5)
         unitsPerPlayer (int, default=2)
         neighbours:     A dictionary {(row, col) : [(row, col), ...]}
+
+    Methods:
+        get_moves, do_move, get_plays, do_play, get_children,
+        equiv_class, randomState, exists_winIn, exists_loseIn,
+        heuristic_value
     """
 
     def __init__(self, dimension=5, unitsPerPlayer=2):
@@ -144,55 +148,60 @@ class Environment():
         for row in range(0, dimension):
             for col in range(0, dimension):
                 neighbours = [(row+x, col+y) for x in [-1, 0, 1]
-                              for y in [-1, 0, 1]
+                                                for y in [-1, 0, 1]
                               if row+x >= 0 and row+x < dimension
                               and col+y >= 0 and col+y < dimension
                               and (x != 0 or y != 0)]
                 self.neighbours.update({(row, col): neighbours})
 
     def get_moves(self, state):
-        """Returns a list of moves '(unitToMove, destination)'."""
+        """Lists all moves '(unitToMove, destination)'.
+
+        [!] Does NOT check if state is terminal.
+        ."""
         moves = []
-        for p in state.unitsPlayer:
+        for p in state.units_player:
             for dest in self.neighbours[p]:
-                if state.board[p] <= 3\
-                        and not dest in state.unitsPlayer + state.unitsOpponent\
+                if state.board[dest] <= 3\
+                        and not dest in state.units_player + state.units_opponent\
                         and state.board[dest] - state.board[p] <= 1:
                     moves.append((p, dest))
         return moves
 
     def do_move(self, move, state):
-        """Returns a new State after moving. Active player NOT changed."""
+        """Returns a new State after moving. Active player does NOT change."""
         (unitPos, dest) = move
-        newUnitsPlayer = state.unitsPlayer.copy()
+        newUnitsPlayer = state.units_player.copy()
         newUnitsPlayer.remove(unitPos)
         newUnitsPlayer.append(dest)
-        return State(state.board, newUnitsPlayer, state.unitsOpponent)
+        return State(state.board, newUnitsPlayer, state.units_opponent)
 
     def get_plays(self, state):
-        """Returns a list of plays '(unitToMove, destination, buildPos)'."""
+        """Lists all legal plays '(unitToMove, destination, buildPos)'."""
         plays = []
+        if self.score(state) != 0: return plays # no plays if terminal state
+
         moves = self.get_moves(state)
         for (unitPos, dest) in moves:
             plays.append((unitPos, dest, unitPos))
             for buildPos in self.neighbours[dest]:
-                if buildPos not in state.unitsPlayer + state.unitsOpponent\
-                        and state.board[buildPos] != 4:
+                if buildPos not in state.units_player + state.units_opponent\
+                        and state.board[buildPos] < 4:
                     plays.append((unitPos, dest, buildPos))
         return plays
 
     def do_play(self, play, state):
         """Returns a new State after playing. Active player IS changed."""
         (unitPos, dest, buildPos) = play
-        newUnitsPlayer = state.unitsPlayer.copy()
+        newUnitsPlayer = state.units_player.copy()
         newUnitsPlayer.remove(unitPos)
         newUnitsPlayer.append(dest)
         newBoard = {p: state.board[p] + int(p == buildPos)
                     for p in self.neighbours.keys()}
-        return State(newBoard, state.unitsOpponent, newUnitsPlayer)
+        return State(newBoard, state.units_opponent, newUnitsPlayer)
 
     def get_children(self, parent):
-        """Returns the list of children of the parent state."""
+        """Returns the list of legal children of the parent state."""
         return [self.do_play(p, parent) for p in self.get_plays(parent)]
 
     def equiv_class(self, state):
@@ -208,8 +217,8 @@ class Environment():
 
         def transformBy(trafo, s=state):
             newBoard = {trafo(p): s.board[p] for p in self.neighbours.keys()}
-            newUnitsPlayer = [trafo(p) for p in s.unitsPlayer]
-            newUnitsOpponent = [trafo(p) for p in s.unitsOpponent]
+            newUnitsPlayer = [trafo(p) for p in s.units_player]
+            newUnitsOpponent = [trafo(p) for p in s.units_opponent]
             return State(newBoard, newUnitsPlayer, newUnitsOpponent)
         return [transformBy(trafo) for trafo in symTrafos]
 
@@ -247,10 +256,10 @@ class Environment():
 
         [!] Inconsistent if two or more units are on level 3.
         """
-        for p in state.unitsPlayer:
+        for p in state.units_player:
             if state.board[p] == 3:
                 return 1
-        for p in state.unitsOpponent:
+        for p in state.units_opponent:
             if state.board[p] == 3:
                 return -1
         if self.get_moves(state).__len__() == 0:
@@ -295,21 +304,20 @@ class Environment():
         return False
 
     def heuristic_value(self, state):
-        """Returns a heuristic value of the gamestate."""
+        """Returns a heuristic value, satisfying the zero-sum property."""
         # Check if a player has a won.
         # Does not [!] check for illegal state of two units on level 3
         score = self.score(state)
         if score != 0:
             return score
 
-        Moves = self.get_moves(state)
-        # heightscore of possible moves
-        value = sum([state.board[m[1]] for m in Moves])/(3*Moves.__len__())
-        # subtract height of opponents current units
-        value -= sum([state.board[u] for u in state.unitsOpponent]
-                     )/(3*state.unitsOpponent.__len__())
-        return value
+        # compute a heightscore of the units
+        value = sum([state.board[u] for u in state.units_player]
+                     )/(1 + 2*state.units_player.__len__())
+        value -= sum([state.board[u] for u in state.units_opponent]
+                     )/(1+ 2*state.units_opponent.__len__())
 
+        return value
 
 class Player:
     """Blueprint for a Player.
@@ -329,7 +337,6 @@ class Player:
     def choose_play(self, state):
         """Function {State s} -> {State r: reachable from s}"""
         return choice(self.env.get_plays(state))
-
 
 class HumanViaConsole(Player):
     """A human that plays via the console."""
@@ -384,7 +391,6 @@ class HumanViaConsole(Player):
                 print((x, y), 'is not from', validList, '\nTry again...')
             else:
                 return (x, y)
-
 
 class Game:
     """Each instance represents a played game.
