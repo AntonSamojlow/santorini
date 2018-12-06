@@ -155,7 +155,6 @@ class ExampleTree(Node):
         self.children = [ExampleTree(val, parent=self)
                          for val in structure[self.name]]
 
-
 class SEU():
     """
     Blueprint for TS of the type "Selection, Expansion and Updating".
@@ -232,7 +231,6 @@ class SEU():
         for _ in range(0, max_count):
             self.run(root)
 
-
 class LCB1(SEU):
     """
     Monte-Carlo TS with selection via the LCB1-algorithm for a zero-sum game.
@@ -277,7 +275,6 @@ class LCB1(SEU):
             i_winner = (root_won == (i % 2 == 0))
             path[i].value += (2*int(i_winner)-1 - path[i].value)/path[i].visits
         path[-1].visits += 1
-
 
 class Alphabeta():
     """

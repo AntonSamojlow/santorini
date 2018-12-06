@@ -10,7 +10,7 @@ Example 1, class Environment:
     and analyse the game tree or study the Markov decision process.
 
     env = Environment(dimension=3, unitsPerPlayer=1)
-    parent = env.randomState(turn=2)
+    parent = env.random_state(turn=2)
     parent.print()
     print('*** children & heuristic value: ***')
     for child in env.get_children(parent):
@@ -137,7 +137,6 @@ class State():
 
         if out is not sys.stdout:
             out.close()
-
 
 class Environment():
     """Represents the abstract game environment.
@@ -334,7 +333,6 @@ class Environment():
 
         return value
 
-
 class Player:
     """Blueprint for a Player.
 
@@ -353,7 +351,6 @@ class Player:
     def choose_play(self, state):
         """Function {State s} -> {State r: reachable from s}"""
         return choice(self.env.get_plays(state))
-
 
 class HumanViaConsole(Player):
     """A human that plays via the console."""
@@ -407,7 +404,6 @@ class HumanViaConsole(Player):
                 print((row, col), 'is not from', valid_list, '\nTry again...')
             else:
                 return (row, col)
-
 
 class Game:
     """Each instance represents a played game.
