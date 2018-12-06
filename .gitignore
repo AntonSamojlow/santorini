@@ -1,1 +1,7 @@
 *.pylintrc
+*test.py
+*.ipynb
+*.ipynb_checkpoints
+*__pycache__
+*.json
+*.o

@@ -6,8 +6,10 @@ Written by Anton Samojlow, December 2018. [anton.samojlow@web.de]
 """
 from math import sqrt, log
 from time import time
+from datetime import datetime
 from random import choice, shuffle
-
+from os.path import isfile
+import json
 
 class Node():
     """
@@ -15,9 +17,9 @@ class Node():
 
     Assumptions/Notes:
         1.  The tree is defined by overriding the function grow, which
-            expands the tree by one level from the given node: On input
-            Node n, it assigns to n.children the list of child Nodes [c,...]
-            such that c.children = [] and c.parent = n.
+            expands the tree from the given node: On input Node n, it
+            assigns to n.children the list of child Nodes [c,...] such
+            that c.children = [] and c.parent = n.
         2.  A node is terminal :<=> BOTH n.children = [] and n.value = +1/-1.
         3.  A node is a leaf (of the current tree) :<=> n.children = [].
         4.  A different initial value can be set by overriding __init__,
@@ -33,27 +35,29 @@ class Node():
         visits (int):   Number of times the TS has visited the node.
 
     Methods:
-        grow, print()
+        grow, print, save_json, load_json
     """
 
-    def __init__(self, name, parent=None):
+    def __init__(self, name, parent=None, visits=0, value=0, children=None):
         self.name = name
         self.parent = parent
-        self.children = []
-        self.visits = 0
-        self.value = 0
+        self.visits = visits
+        self.value = value
+        if children is None:
+            self.children = []
+        else: self.children = children
+
 
     def grow(self):
         """Expands the tree by one level. See Node.__doc__"""
         self.children = []
 
-    def print(self, max_depth=None, __current_depth=0, value_digits=3):
+    def print(self, max_depth=1, __current_depth=0, value_digits=3):
         """
         Displays the tree from the given node.
 
         Arguments:
-            max_depth (int):    Limits the depth up to which the tree is shown.
-                                By default (None), the whole tree is displayed.
+            max_depth (int, default:1): Depth up to which the tree is shown.
             __current_depth:    Used for proper formatting and should not be
                                 changed manually.
         """
@@ -70,15 +74,64 @@ class Node():
                 print('.   ', end='')
             print('|--', end='')
         print(node_info)  # print node data
-        if max_depth is None:
+
+        if max_depth > 0:  # expand a level
             for child in list(self.children):
-                child.print(None, __current_depth+1)  # expand a level
-        elif max_depth > 0:
-            for child in list(self.children):
-                child.print(max_depth-1, __current_depth+1)  # expand a level
+                child.print(max_depth-1, __current_depth+1)
         if __current_depth == 0:  # footer
             print(''.ljust(2+node_info.__len__(), '-'))
 
+    def save_json(self, path):
+        """Saves the Node and its subtree as a JSON object to a file.
+
+        If the file exists, the path is changed to '%y%m%d_%H%M%S_%f_path'.
+        """
+        class NodeEncoder(json.JSONEncoder):
+            """Custom Encode for class Node."""
+            def default(self, obj):
+                if isinstance(obj, Node):
+                    if obj.parent is not None: # avoid circular Encoder call
+                        par_value = obj.parent.name
+                    else: par_value = None
+                    dct = {'__Node__' : True,
+                           'name' : obj.name,
+                           'parent' : par_value,
+                           'visits' : obj.visits,
+                           'value' : obj.value,
+                           'children' : obj.children}
+                    return dct
+                return json.JSONEncoder.default(self, obj)
+
+        if isfile(path):
+            path = str(datetime.now().strftime("%y%m%d_%H%M%S_%f"))+'_'+path
+            print('[!] filepath exists, changed to', path)
+        print('* saving subtree of', self.name, '...')
+        with open(path, 'w', encoding='utf-8', newline=None) as file:
+            json.dump(self, file, skipkeys=True, cls=NodeEncoder, indent=1)
+        print(' ...finished.')
+        return None
+
+    @classmethod
+    def load_json(cls, path):
+        """Returns the Node and its subtree from a JSON object in a file.
+
+        Inverse to Node.save_json(path).
+        """
+        def decode(dct):
+            if "__Node__" in dct:
+                return Node(dct['name'],
+                            parent=dct['parent'],
+                            visits=dct['visits'],
+                            value=dct['value'],
+                            children=dct['children'])
+            return dct
+
+        print('* loading subtree from', path, '...')
+        with open(path, 'r', encoding='utf-8', newline=None) as file:
+            data_read = file.read()
+            node = json.loads(data_read, object_hook=decode)
+        print(' ...finished.')
+        return node
 
 class ExampleTree(Node):
     """
@@ -123,11 +176,21 @@ class SEU():
         None
 
     def select(self, node):
+        """Selection phase of a MCTS algorithm.
+
+        Returns:    A branch (list of nodes) that starts at self
+                    and ends in a leaf node.
+        """
         if node.children == []:
             return [node]
         return [node] + self.select(choice(node.children))
 
     def expand(self, node):
+        """Expansion phase of a MCTS algorithm.
+
+        Returns:    A branch (list of nodes) that starts at self
+                    and ends in a terminal node.
+        """
         if (node.value == 1 or node.value == -1):
             return [node]
         else:
@@ -135,6 +198,13 @@ class SEU():
         return [node] + self.expand(choice(node.children))
 
     def update(self, path):
+        """Update (Backpropagation) phase of a MCTS algorithm.
+
+        Input:  A branch (list of nodes) that ends in a terminal node.
+
+        This function updates the information along the branch according
+        to the outcome of the game and the value the algorithm is estimating.
+        """
         root_won = (path[-1].value == 1) != (path.__len__() % 2 == 0)
         for i in range(0, path.__len__()-1):
             path[i].visits += 1
@@ -143,16 +213,22 @@ class SEU():
         path[-1].visits += 1
 
     def run(self, root):
+        """Executes the sequence 'select, expand, update'."""
         path = self.select(root)
         path = path[:-1] + self.expand(path[-1])
         self.update(path)
 
     def run_timed(self, root, max_sec):
+        """Executes sequences of 'select, expand, update' for max_sec seconds.
+
+        The runtime may exceed max_sec by the excecution time of one sequence.
+        """
         t_start = time()
         while time() - t_start < max_sec:
             self.run(root)
 
     def run_counted(self, root, max_count):
+        """Executes max_count times the sequence 'select, expand, update'."""
         for _ in range(0, max_count):
             self.run(root)
 
@@ -178,18 +254,20 @@ class LCB1(SEU):
         E.print()
     """
 
-    def __init__(self, LCB_cst=2.0):
+    def __init__(self, explore_cst=2.0):
         SEU.__init__(self)
-        self.LCB_cst = LCB_cst
+        self.explore_cst = explore_cst
 
     def select(self, node, N=None):
-        if N is None:
-            N = 1 + node.visits  # set N if select is called on root
+        # We reset N if select is called on a root or if the current node
+        # has more visits than its parent.
+        if N is None or N <= node.visits:
+            N = 1 + node.visits
         if node.children == []:
             return [node]
 
         def LCB(node):
-            return node.value - sqrt(self.LCB_cst*log(N)/(1+node.visits))
+            return node.value - sqrt(self.explore_cst*log(N)/(1+node.visits))
         return [node] + self.select(min(node.children, key=LCB), N=N)
 
     def update(self, path):
