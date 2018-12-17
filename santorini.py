@@ -1,5 +1,5 @@
 """
-Implements the santorini boardgame. See usage examples below.
+Implements the santorini boardgame.
 
 Written by Anton Samojlow, November 2018. [anton.samojlow@web.de]
 
@@ -29,13 +29,34 @@ Example 2, class Game:
     AI = Player(env)
     Human = HumanViaConsole(env)
     Game([Human, AI], env, verbose=True).save("gamelog.o")
+
+Example 3, class SanGraph:
+    The following executes a LCB1-guided MCTS for 1 sec on the
+    GameGraph for Santorini with dimension 2 and 1 unit per player.
+    It also computes the alphabeta value of some root to depth 13.
+    See also gamesearch.py.
+
+    SG = SanGraph(Environment(dimension=2, unitsPerPlayer=1))
+    MCTS = gamesearch.LCB1(SG)
+    print('roots:', SG.root_names)
+    ROOT = SG.nodes[choice(list(SG.root_names))]
+    SG.print_subtree(ROOT, 2, data=MCTS.data)
+    MCTS.run_timed(ROOT, 1)
+    SG.save('sangraph.json')
+    SanGraph.load('sangraph.json').print_subtree(ROOT, 2, data=MCTS.data)
+
+    AB = gamesearch.Alphabeta(SG)
+    AB.tabled(ROOT, 13)
+    SG.print_subtree(ROOT, 2, data=AB.data)
 """
 
 from math import sqrt
 from random import randint, choice
 from time import time
+from os.path import isfile
 import sys
-
+import json
+import gamesearch
 
 class State():
     """Represents a game state.
@@ -76,7 +97,7 @@ class State():
         board, units_player, units_opponent = {}, [], []
         for row in range(0, dimension):
             for col in range(0, dimension):
-                board[(row, col)] = int(brd[col*dimension + row])
+                board[(row, col)] = int(brd[row*dimension + col])
         for i in range(0, units_per_player):
             units_player += [(int(u_p[0+i]), int(u_p[1+i]))]
             units_opponent += [(int(u_o[0+i]), int(u_o[1+i]))]
@@ -155,6 +176,8 @@ class Environment():
     def __init__(self, dimension=5, unitsPerPlayer=2):
         self.dimension = dimension
         self.units_per_player = unitsPerPlayer
+
+        # computing the neighbour positions
         self.neighbours = {}
         for row in range(0, dimension):
             for col in range(0, dimension):
@@ -164,6 +187,17 @@ class Environment():
                               and col+y >= 0 and col+y < dimension
                               and (x != 0 or y != 0)]
                 self.neighbours.update({(row, col): neighbours})
+
+        # computing the possible start states (all possible unit positions)
+        positions = list(self.neighbours.keys())
+        u_list = [(p, ) for p in positions]
+        for _ in range(0, 2*self.units_per_player-1): # add other units
+            u_list = [(*l, p) for p in positions for l in u_list if p not in l]
+        u_list = sorted({(tuple(sorted(u[:unitsPerPlayer])),
+                          tuple(sorted(u[unitsPerPlayer:])))
+                         for u in u_list}) # removing duplicates and sorting
+        self.start_states = [State({p: 0 for p in positions}, u[0], u[1])
+                             for u in u_list]
 
     def get_moves(self, state):
         """Lists all moves '(unitToMove, destination)'.
@@ -273,6 +307,7 @@ class Environment():
         """
         for pos in state.units_player:
             if state.board[pos] == 3:
+                print('[!] score(state) returns 1, illegal state encountered?')
                 return 1
         for pos in state.units_opponent:
             if state.board[pos] == 3:
@@ -433,7 +468,7 @@ class Game:
         """
 
         if start_state is None:
-            self.start_state = environment.randomState(turn=0)
+            self.start_state = choice(environment.start_states)
         self.players = players
         self.plays = []
         self.result = 0
@@ -444,29 +479,27 @@ class Game:
             print('* first player:', self.players[0].info)
             print('* second player:', self.players[1].info)
 
-        activeplayer = self.players[0]
+        active = 0
         currentstate = self.start_state
 
         if verbose:
-            currentstate.print(playerInitials=['A', 'B'])
+            currentstate.print(initials=['A', 'B'])
         time0 = time()
         while True:
-            play = activeplayer.choose_play(currentstate)
-            self.plays.append(play)
-            currentstate = environment.do_play(play, currentstate)
-            activeplayer = self.players[int(
-                not bool(self.players.index(activeplayer)))]
+            self.plays += [players[active].choose_play(currentstate)]
+            currentstate = environment.do_play(self.plays[-1], currentstate)
+            active = 0 if active == 1 else 1
             if verbose:
-                if activeplayer == self.players[0]:
-                    currentstate.print(playerInitials=['A', 'B'])
+                if active == 0:
+                    currentstate.print(initials=['A', 'B'])
                 else:
-                    currentstate.print(playerInitials=['B', 'A'])
+                    currentstate.print(initials=['B', 'A'])
 
             score = environment.score(currentstate)
             if score != 0:
                 self.playtime = round(time()-time0, 3)
-                if ((score == 1 and activeplayer == self.players[0]) or
-                        (score == -1 and activeplayer == self.players[1])):
+                if ((score == 1 and active == 0) or
+                        (score == -1 and active == 1)):
                     self.result = 1
                 else:
                     self.result = 2
@@ -474,17 +507,86 @@ class Game:
                     print('* Player', self.result, 'won!')
                 break
 
-    def save(self, path):
-        """Appends the game information to a file."""
-        with open(path, 'a', newline=None) as file:
-            file.write('\n')
-            file.write('1st player:  '+self.players[0].info+'\n')
-            file.write('2nd player:  '+self.players[1].info+'\n')
-            file.write('winner:      '+str(self.result)+'\n')
-            file.write('start state: '+self.start_state.string()+'\n')
-            plays_str = ''.join(str(P)
-                                for P in self.plays).replace(')(', '|')
-            plays_str = plays_str.replace(',', '').replace(
-                ')', '').replace('(', '').replace(' ', '')
-            file.write('plays:       '+plays_str+'\n')
-            file.write('playtime:    '+str(self.playtime)+' s\n')
+    def save(self, path, form='text'):
+        """Appends the game information to a file.
+
+        Arguments:
+            path (str):     The file path.
+            format (str):   Default: 'text'. Other option: 'json'.
+        """
+
+        if form is 'text':
+            with open(path, 'a', newline=None) as file:
+                file.write('\n')
+                file.write('1st player:  '+self.players[0].info+'\n')
+                file.write('2nd player:  '+self.players[1].info+'\n')
+                file.write('winner:      '+str(self.result)+'\n')
+                file.write('start state: '+self.start_state.string()+'\n')
+                plays_str = ''.join(str(P)
+                                    for P in self.plays).replace(')(', '|')
+                plays_str = plays_str.replace(',', '').replace(
+                    ')', '').replace('(', '').replace(' ', '')
+                file.write('plays:       '+plays_str+'\n')
+                file.write('playtime:    '+str(self.playtime)+' s\n')
+        elif form is 'json':
+            entry = {'1st player': self.players[0].info,
+                     '2nd player': self.players[1].info,
+                     'winner': self.result,
+                     'start state': self.start_state.string(),
+                     'plays': self.plays,
+                     'playtime': self.playtime}
+            if isfile(path):
+                with open(path, 'r', encoding='utf-8', newline=None) as file:
+                    json_dict = json.load(file)
+                    json_dict['Gamelogs'] += [entry]
+                    save_data = json_dict
+            else: save_data = {'Gamelogs': [entry]}
+            with open(path, 'w', encoding='utf-8', newline=None) as file:
+                json.dump(save_data, file, skipkeys=True, indent=4)
+        return False
+
+class SanGraph(gamesearch.GameGraph):
+    """Graph for a Santorini Game.
+
+    Attributes:
+        desc (str):     Description of the Graph.
+        nodes (dct):    An index of the form {Node.name : Node}, holding
+                        all known Nodes of the Graph.
+        root_names (list):  Lists the root names.
+
+    Methods:
+        add_children, print_subtree, to_json, from_json, save, load,
+    """
+
+    def __init__(self, env, desc=None, root_names=None, nodes=None):
+        if desc is None:
+            desc = 'GameGraph for Santorini, dim: '+str(env.dimension)+\
+                   ', units/player:'+str(env.units_per_player)
+        if root_names is None:
+            root_names = {s.string() for s in env.start_states}
+            if nodes is None:
+                nodes = {}
+            for name in root_names:
+                if name not in nodes:
+                    nodes.update({name : self.Node(name)})
+
+        gamesearch.GameGraph.__init__(self, desc, root_names, nodes)
+        self.env = env
+
+    def add_children(self, node):
+        if not node.is_open:
+            print('[!] SanGraph.add_children(node) called on non-open node')
+            return False
+
+        node.children = []
+        for c_state in self.env.get_children(State.from_string(node.name)):
+            c_name = c_state.string()
+            try:
+                node.children += [self.nodes[c_name]]
+                self.nodes[c_name].parents += [node]
+            except KeyError:
+                child_node = self.Node(c_name, parents=[node],
+                                       value=self.env.score(c_state))
+                self.nodes[c_name] = child_node
+                node.children += [child_node]
+        return True
