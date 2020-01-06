@@ -9,7 +9,7 @@ Example 1, class Environment:
     some heuristic value. This can for example be used to generate
     and analyse the game tree or study the Markov decision process.
 
-    env = Environment(dimension=3, unitsPerPlayer=1)
+    env = Environment(dimension=3, units_per_player=1)
     parent = env.random_state(turn=2)
     parent.print()
     print('*** children & heuristic value: ***')
@@ -25,7 +25,7 @@ Example 2, class Game:
     by deriving the class Player and overriding Player.choose_play(),
     as implemeneted for the class HumanViaConsole.
 
-    env = Environment(dimension=3, unitsPerPlayer=1)
+    env = Environment(dimension=3, units_per_player=1)
     AI = Player(env)
     Human = HumanViaConsole(env)
     Game([Human, AI], env, verbose=True).save("gamelog.o")
@@ -36,7 +36,7 @@ Example 3, class SanGraph:
     It also computes the alphabeta value of some root to depth 13.
     See also gamesearch.py.
 
-    SG = SanGraph(Environment(dimension=2, unitsPerPlayer=1))
+    SG = SanGraph(Environment(dimension=2, units_per_player=1))
     MCTS = gamesearch.LCB1(SG)
     print('roots:', SG.root_names)
     ROOT = SG.nodes[choice(list(SG.root_names))]
@@ -56,7 +56,9 @@ from time import time
 from os.path import isfile
 import sys
 import json
+import numpy
 import gamesearch
+
 
 class State():
     """Represents a game state.
@@ -104,21 +106,28 @@ class State():
         return State(board, units_player, units_opponent)
 
     def array(self):
-        """Returns [[height,...], [[row, col],... ], [[row, col],... ]]"""
-        u_p = [list(p) for p in self.units_player]
-        u_o = [list(p) for p in self.units_opponent]
-        return [list(self.board.values()), u_p, u_o]
+        """Returns a numpy-array (dim=1 and length= board_dim** + 2*units_per_pla yer)"""
+        temp = list(self.board.values())
+        for unit in self.units_player:
+            temp.append(unit[0])
+            temp.append(unit[1])
+        for unit in self.units_opponent:
+            temp.append(unit[0])
+            temp.append(unit[1])
+        return numpy.array(temp)
 
     @classmethod
-    def from_array(cls, array):
-        """Returns a State, inverse of State.array()"""
-        [brd, u_p, u_o] = array
-        board, dimension = {}, int(sqrt(brd.__len__()))
-        for row in range(0, dimension):
-            for col in range(0, dimension):
-                board[(row, col)] = brd[col*dimension + row]
-        units_player = [(p[0], p[1]) for p in u_p]
-        units_opponent = [(p[0], p[1]) for p in u_o]
+    def from_array(cls, array, environment):
+        """Returns a State, inverse of State.array(). Needs the board_dim."""
+        board, dim = {}, environment.dimension
+        units_pp = int((len(array) - dim*dim)/2)
+        for row in range(0, dim):
+            for col in range(0, dim):
+                board[(row, col)] = array[col*dim + row]
+        units_player = [(array[i], array[i])
+                    for i in range(dim*dim, dim*dim+units_pp, 2)]
+        units_opponent = [(array[i], array[i])
+                    for i in range(dim*dim+units_pp, dim*dim+2*units_pp, 2)]
         return State(board, units_player, units_opponent)
 
     def print(self, file=None, initials=None):
@@ -164,7 +173,7 @@ class Environment():
 
     Attributes:
         dimension (int, default=5)
-        unitsPerPlayer (int, default=2)
+        units_per_player (int, default=2)
         neighbours:     A dictionary {(row, col) : [(row, col), ...]}
 
     Methods:
@@ -173,9 +182,9 @@ class Environment():
         heuristic_value
     """
 
-    def __init__(self, dimension=5, unitsPerPlayer=2):
+    def __init__(self, dimension=5, units_per_player=2):
         self.dimension = dimension
-        self.units_per_player = unitsPerPlayer
+        self.units_per_player = units_per_player
 
         # computing the neighbour positions
         self.neighbours = {}
@@ -193,8 +202,8 @@ class Environment():
         u_list = [(p, ) for p in positions]
         for _ in range(0, 2*self.units_per_player-1): # add other units
             u_list = [(*l, p) for p in positions for l in u_list if p not in l]
-        u_list = sorted({(tuple(sorted(u[:unitsPerPlayer])),
-                          tuple(sorted(u[unitsPerPlayer:])))
+        u_list = sorted({(tuple(sorted(u[:units_per_player])),
+                          tuple(sorted(u[units_per_player:])))
                          for u in u_list}) # removing duplicates and sorting
         self.start_states = [State({p: 0 for p in positions}, u[0], u[1])
                              for u in u_list]
@@ -247,8 +256,10 @@ class Environment():
         return State(new_brd, state.units_opponent, new_u_p)
 
     def get_children(self, parent):
-        """Returns the list of legal children of the parent state."""
-        return [self.do_play(pos, parent) for pos in self.get_plays(parent)]
+        """Returns a SORTED list of legal children of the parent state."""
+        return sorted([self.do_play(pos, parent)
+                       for pos in self.get_plays(parent)],
+                      key=lambda s: s.string())
 
     def equiv_class(self, state):
         """Returns symmetrically equivalent states. May contain duplicates."""
@@ -552,7 +563,8 @@ class SanGraph(gamesearch.GameGraph):
         desc (str):     Description of the Graph.
         nodes (dct):    An index of the form {Node.name : Node}, holding
                         all known Nodes of the Graph.
-        root_names (list):  Lists the root names.
+        root_names (set)
+        env (Environment)
 
     Methods:
         add_children, print_subtree, to_json, from_json, save, load,
@@ -590,3 +602,40 @@ class SanGraph(gamesearch.GameGraph):
                 self.nodes[c_name] = child_node
                 node.children += [child_node]
         return True
+
+    @classmethod
+    def from_json(cls, string, env):
+        """Returns the GameGraph from a JSON string, inverse of 'to_json'.
+
+        [!] Must be reimplemented for other graphs with different attributes.
+        """
+        def decode(dct):
+            if "__GameGraph__" in dct:
+                return cls(env, dct['desc'], root_names=dct['root_names'],
+                           nodes={n.name: n for n in dct['nodes']})
+
+            if "__GameGraph.Node__" in dct:
+                del dct["__GameGraph.Node__"]
+                return cls.Node(**dct)
+
+        graph = json.loads(string, object_hook=decode)
+        # rebuilding the references between the GameGraph.Node instances:
+        for node in graph.nodes.values():
+            if not node.is_open:
+                node.children = [graph.nodes[c] for c in node.children]
+            if not node.parents is None:
+                node.parents = [graph.nodes[p] for p in node.parents]
+        return graph
+
+    @classmethod
+    def load(cls, path, env):
+        """Loads the Graph from a file created by 'GameGraph.save()'."""
+        try:
+            file = open(path, 'r', encoding='utf-8', newline=None)
+            graph = cls.from_json(file.read(), env)
+        except Exception as exc:
+            print('[!] failed to load Gamegraph from', path)
+            print('[!] exception:', exc)
+        finally:
+            file.close()
+        return graph

@@ -58,7 +58,6 @@ from datetime import datetime
 from os.path import isfile
 import json
 
-
 class GameGraph():
     """Represents a Graph of a two-player game.
 
@@ -74,7 +73,7 @@ class GameGraph():
         desc (str):         Description of the Graph.
         nodes (dct):        An index of the form {Node.name : Node}, holding
                             all known Nodes of the Graph.
-        root_names (list):  Lists the root names.
+        root_names (set):   Holds the root names.
 
     Methods:
         add_children, print_subtree, to_json, from_json, save, load
@@ -133,15 +132,16 @@ class GameGraph():
         Adds child nodes to node.children and updates GameGraph.nodes.
 
         Recipe:
-        Aborts if called on a node that is not open, returning False.
-        Else, determine all child nodes, creating the instance self.Node is
-        a child is not in self.nodes (and adding it to self.nodes). Else,
-        add node to the child.parents. Set node.children and return True.
-        Note: If the list of children is empty, the value must be +1/-1.
+        If called on a node N that is not open, return False.
+        Else: Determine and add all child nodes {C}, instantiating self.Node
+        if the child is new and adding it to the graphs register self.nodes.
+        Add N to C.parents. Set N.children = {C} and return True.
+        Note: If the list of children is empty, the N.value must be +1/-1.
         """
         if not node.is_open:
             return False
         node.children = []
+        return True
 
     def print_subtree(self, node, max_depth=1, __current_depth=0,
                       value_digits=1, data=None):
@@ -232,7 +232,7 @@ class GameGraph():
         Does not overwrite 'path'. Create a timestamped copy if 'path' exists.
         """
         if isfile(path):
-            path = str(datetime.now().strftime("%y%m%d_%H%M%S_%f"))+'_'+path
+            path = path+'_'+str(datetime.now().strftime("%y%m%d_%H%M%S_%f"))
             print('[!] filepath exists, changed to', path)
         with open(path, 'w', encoding='utf-8', newline=None) as file:
             file.write(self.to_json())
@@ -245,12 +245,12 @@ class GameGraph():
         """
         def decode(dct):
             if "__GameGraph__" in dct:
-                return GameGraph(dct['desc'], root_names=dct['root_names'],
-                                 nodes={n.name: n for n in dct['nodes']})
+                return cls(dct['desc'], root_names=dct['root_names'],
+                           nodes={n.name: n for n in dct['nodes']})
 
             if "__GameGraph.Node__" in dct:
                 del dct["__GameGraph.Node__"]
-                return GameGraph.Node(**dct)
+                return cls.Node(**dct)
 
         graph = json.loads(string, object_hook=decode)
         # rebuilding the references between the GameGraph.Node instances:
@@ -273,7 +273,6 @@ class GameGraph():
         finally:
             file.close()
         return graph
-
 
 class ExampleGraph(GameGraph):
     """An example of a GameGraph."""
@@ -312,7 +311,6 @@ class ExampleGraph(GameGraph):
             node.value = value_dict[node.name]
         return True
 
-
 class SEU():
     """ Blueprint for search algorithms "Selection, Expansion and Updating".
 
@@ -326,6 +324,7 @@ class SEU():
     class LCB1. Please also provide a description of the collected data.
 
     Attributes:
+        graph (GameGraph)
         data (dct):     Of the form {Node.name: {'wins': int, 'visits': int}}.
 
     Methods:
@@ -412,7 +411,6 @@ class SEU():
         for _ in range(0, max_count):
             self.run(root)
 
-
 class LCB1(SEU):
     """Monte-Carlo TS with selection via the LCB1-algorithm.
 
@@ -460,7 +458,6 @@ class LCB1(SEU):
 
         return [node] + self.select(min(node.children, key=lcb1), N=N)
 
-
 class Alphabeta():
     """
     Implements alphabeta search algorithms for zero-sum games.
@@ -485,7 +482,9 @@ class Alphabeta():
     Methods:
         basic, tabled:  Both Take optional boolean arguments 'moveordered'
                         and 'shuffled', which default to False. In case
-                        of moverordered=True, shuffled is ignored.
+                        of moverordered=True, shuffled is ignored. Both
+                        moveordering and shuffling operate on a copy, thus
+                        preserving the original order of Node.children.
     """
 
     def __init__(self, graph, sort_fct=None, data=None):
@@ -525,7 +524,7 @@ class Alphabeta():
         if moveordered:
             children = sorted(node.children, key=self.sort_fct)
         else:
-            children = node.children
+            children = list(node.children)
             if shuffled:
                 shuffle(children)
 
@@ -583,7 +582,7 @@ class Alphabeta():
         if moveordered:
             children = sorted(node.children, key=self.sort_fct)
         else:
-            children = node.children
+            children = list(node.children)
             if shuffled:
                 shuffle(children)
 
