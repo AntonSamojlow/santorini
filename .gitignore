@@ -3,6 +3,6 @@
 *.ipynb
 *.ipynb_checkpoints
 *__pycache__
-*.json
-*.o
+*.vscode
 *.venv
+*.env

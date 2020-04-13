@@ -1,20 +1,23 @@
 """
 Collection of search algorithms for two-player games. The central object
-upon which the algorithms operate is a special (finite) directed graph:
+upon which the algorithms operate is the 'GameGraph':
 
 It has at least one root (no ingoing edges) and the property that each edge
 increases the 'level' (internal counter of a node, for roots it equals 0)
-by _exactly_ one. The graph may in particular have roots, but every path from
-a fixed node N to any root has the same length, equalling the 'level' of N.
+by _exactly_ one. So every path from a fixed node to any root has the same
+length, the 'level' of the node.
 
 Most two-player games can be modelled as such a graph. Transition
-probabilities can be modelled by weights on the edges.
+probabilities can be implemenetd as weights on the edges.
 
-Since for many games, it is infeasible (or impossible) to specify the full
+Since for most games, it is infeasible (or impossible) to specify the full
 graph, we allow an 'incomplete' description: A node N may be 'open', that is
 its children are not specified, but they may be computed by some rule, which
-is defined in the method 'add_children'. Note in particular that an open Node
-is never terminal (the latter means add_children computed an empty list).
+is defined in the method 'add_children'. Note in particular that an 'open' Node
+is not terminal (the latter means add_children has been run and returned empty).
+
+Written by Anton Samojlow, December 2018. [anton.samojlow@web.de]
+Updated April 2020.
 
 Example 1, classes SEU and ExampleGraph:
     Execute the most basic MCTS on a simple graph with two roots.
@@ -47,8 +50,6 @@ Example 3, classes Alphabeta and ExampleGraph:
     AB.tabled(EG.nodes['root2'], 4)
     EG.print_subtree('root1', 4, data=AB.data)
     EG.print_subtree('root2', 4, data=AB.data)
-
-Written by Anton Samojlow, December 2018. [anton.samojlow@web.de]
 """
 
 from random import choice, shuffle
@@ -57,14 +58,20 @@ from time import time
 from datetime import datetime
 from os.path import isfile
 import json
+import logging
+from numpy import array as nparray
+
+LOGGER = logging.getLogger(__name__)
+
 
 class GameGraph():
     """Represents a Graph of a two-player game.
 
-    The Graph may be 'open': There exist nodes which have not been build yet,
+    The Graph may be 'open': There exist nodes which have not been expanded yet,
     meaning it is not known whether they have children or are terminal. To
-    implement a specific game, inherit and override the methods but NOT the
-    class Node. Then run the search algorithms provided in this module.
+    implement a specific game, inherit and override the methods. Better
+    avoid overriding class Node, i.p. changing the properties is not advised.
+    Then run the search algorithms provided in this module.
 
     Subclasses:
         Node
@@ -76,24 +83,27 @@ class GameGraph():
         root_names (set):   Holds the root names.
 
     Methods:
-        add_children, print_subtree, to_json, from_json, save, load
+        add_children, node_from_array, print_subtree, to_json, from_json,
+        save, load
     """
     class Node():
         """Node in the Graph.
 
-        This is the basic unit of the Graph. It should NOT be overridden or
-        changed. Instead, consider adding strucuture/variables/methods to
-        the GameGraph itself.
+        This is the basic unit of the Graph. Better NOT override the properties.
+        Moreover, instead of attaching data to the  Node, consider adding
+        strucuture/variables/methods to GameGraph itself.
 
         Attributes:
-            name (str):     Idenitfier.
+            name (str):     Identifier.
             parents ([Node,...])
             children ([Node,...])
             value (int):    Value of the Node.
+            as_nparray:     Returns a numpy-array representation.
 
         Logic/Assumptions:
             n is open       <=> n.children = None
             n is terminal   <=> n.children = []
+            n is terminal    => n.value = +1/-1
             [!] n.value == +1/-1 DOES NOT imply that n is terminal
         """
 
@@ -112,6 +122,11 @@ class GameGraph():
         def is_terminal(self):
             """See GameGraph.Node.__doc__ and gamesearch.__doc__"""
             return self.children == []
+
+        @property
+        def as_nparray(self):
+            """Return a numpy representation for the node"""
+            return GameGraph.nparray_of(self.name)
 
     def __init__(self, desc=None, root_names=None, nodes=None):
         if desc is None:
@@ -133,8 +148,8 @@ class GameGraph():
 
         Recipe:
         If called on a node N that is not open, return False.
-        Else: Determine and add all child nodes {C}, instantiating self.Node
-        if the child is new and adding it to the graphs register self.nodes.
+        Else: Determine and add all child nodes {C}, instantiating 'self.Node'.
+        If the child is new, add it to the graphs register 'self.nodes'.
         Add N to C.parents. Set N.children = {C} and return True.
         Note: If the list of children is empty, the N.value must be +1/-1.
         """
@@ -197,15 +212,23 @@ class GameGraph():
         if __current_depth == 0:  # print footer
             print(''.ljust(2+node_info.__len__(), '-'))
 
-    def to_json(self, indent=4):
-        """Turn the Graph into a (relatively) compact JSON string.
+    def nodename_of(self, array):
+        """Return the nodename, regardless whether the node has been explored
+        yet. Inverse of nparray_of."""
+        return "".join([chr(x) for x in array])
 
-        May need adjustmemt for specific games.
-        """
+    def nparray_of(self, name):
+        """Return the nparray, regardless whether the node has been explored
+        yet. Inverse of nodename_of."""
+        return nparray([ord(c) for c in name])
+
+    def to_json(self, indent=4):
+        """Turn the Graph into a (relatively) compact JSON string. May need
+        adjustmemt for specific games."""
         class GameGraphEncoder(json.JSONEncoder):
             """Custom Encode for class GameGraph."""
 
-            def default(self, obj):
+            def default(self, obj):  # pylint: disable=E0202
                 if isinstance(obj, GameGraph):
                     return {'__GameGraph__': True,
                             'desc': obj.desc,
@@ -218,10 +241,10 @@ class GameGraph():
                             # To reduce the size of the JSON string, we replace
                             # Nodes->Node.name in Node.children & Node.parents
                             # The method from_json reconstructs this process
-                            'parents': None if obj.parents is None else
-                                       [p.name for p in obj.parents],
-                            'children': None if obj.children is None else
-                                        [c.name for c in obj.children],
+                            'parents': None if obj.parents is None
+                                       else [p.name for p in obj.parents],
+                            'children': None if obj.children is None 
+                                        else [c.name for c in obj.children],
                             'value': obj.value}
                 return json.JSONEncoder.default(self, obj)
         return json.dumps(self, cls=GameGraphEncoder, indent=indent)
@@ -233,7 +256,7 @@ class GameGraph():
         """
         if isfile(path):
             path = path+'_'+str(datetime.now().strftime("%y%m%d_%H%M%S_%f"))
-            print('[!] filepath exists, changed to', path)
+            LOGGER.warning('filepath exists, changed to {0}', path)
         with open(path, 'w', encoding='utf-8', newline=None) as file:
             file.write(self.to_json())
 
@@ -268,11 +291,12 @@ class GameGraph():
             file = open(path, 'r', encoding='utf-8', newline=None)
             graph = GameGraph.from_json(file.read())
         except Exception as exc:
-            print('[!] failed to load Gamegraph from', path)
-            print('[!] exception:', exc)
+            LOGGER.warning('failed to load GameGraph from {0}, exception: {1}'
+                           .format(path, exc))
         finally:
             file.close()
         return graph
+
 
 class ExampleGraph(GameGraph):
     """An example of a GameGraph."""
@@ -311,6 +335,7 @@ class ExampleGraph(GameGraph):
             node.value = value_dict[node.name]
         return True
 
+
 class SEU():
     """ Blueprint for search algorithms "Selection, Expansion and Updating".
 
@@ -342,7 +367,7 @@ class SEU():
     def select(self, node):
         """Selection phase of a MCTS algorithm.
 
-        Returns:    A list of vertices that starts at self
+        Returns:    A list of vertices that starts at node
                     and ends in a leaf node.
         """
         if node.is_open or node.is_terminal:
@@ -352,7 +377,7 @@ class SEU():
     def expand(self, node):
         """Expansion phase of a MCTS algorithm.
 
-        Returns:    A branch (list of nodes) that starts at self
+        Returns:    A branch (list of nodes) that starts at node
                     and ends in a terminal node.
         """
         if node.is_open:
@@ -411,6 +436,7 @@ class SEU():
         for _ in range(0, max_count):
             self.run(root)
 
+
 class LCB1(SEU):
     """Monte-Carlo TS with selection via the LCB1-algorithm.
 
@@ -457,6 +483,7 @@ class LCB1(SEU):
                 - sqrt(self.explore_cst*log(N)/(values['visits']))
 
         return [node] + self.select(min(node.children, key=lcb1), N=N)
+
 
 class Alphabeta():
     """

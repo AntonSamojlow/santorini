@@ -1,7 +1,9 @@
 """
-Implements the santorini boardgame.
+Implements the santorini boardgame. And provides an abstraction of
+the game to graph structure (see module gamesearch).
 
 Written by Anton Samojlow, November 2018. [anton.samojlow@web.de]
+Updated April 2020.
 
 Example 1, class Environment:
     The following code displays a random santorini gamestate,
@@ -56,8 +58,13 @@ from time import time
 from os.path import isfile
 import sys
 import json
+import logging
+
 import numpy
 import gamesearch
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class State():
@@ -106,7 +113,7 @@ class State():
         return State(board, units_player, units_opponent)
 
     def array(self):
-        """Returns a numpy-array (dim=1 and length= board_dim** + 2*units_per_pla yer)"""
+        """Returns a numpy-array (dim=1 and length= board_dim** + 2*units_per_player)"""
         temp = list(self.board.values())
         for unit in self.units_player:
             temp.append(unit[0])
@@ -123,11 +130,11 @@ class State():
         units_pp = int((len(array) - dim*dim)/2)
         for row in range(0, dim):
             for col in range(0, dim):
-                board[(row, col)] = array[col*dim + row]
-        units_player = [(array[i], array[i])
-                    for i in range(dim*dim, dim*dim+units_pp, 2)]
-        units_opponent = [(array[i], array[i])
-                    for i in range(dim*dim+units_pp, dim*dim+2*units_pp, 2)]
+                board[(row, col)] = array[row*dim + col]
+        units_player = [(array[i], array[i+1])
+                        for i in range(dim*dim, dim*dim+units_pp, 2)]
+        units_opponent = [(array[i], array[i+1])
+                          for i in range(dim*dim+units_pp, dim*dim+2*units_pp, 2)]
         return State(board, units_player, units_opponent)
 
     def print(self, file=None, initials=None):
@@ -168,6 +175,7 @@ class State():
         if out is not sys.stdout:
             out.close()
 
+
 class Environment():
     """Represents the abstract game environment.
 
@@ -200,19 +208,16 @@ class Environment():
         # computing the possible start states (all possible unit positions)
         positions = list(self.neighbours.keys())
         u_list = [(p, ) for p in positions]
-        for _ in range(0, 2*self.units_per_player-1): # add other units
+        for _ in range(0, 2*self.units_per_player-1):  # add other units
             u_list = [(*l, p) for p in positions for l in u_list if p not in l]
         u_list = sorted({(tuple(sorted(u[:units_per_player])),
                           tuple(sorted(u[units_per_player:])))
-                         for u in u_list}) # removing duplicates and sorting
+                         for u in u_list})  # removing duplicates and sorting
         self.start_states = [State({p: 0 for p in positions}, u[0], u[1])
                              for u in u_list]
 
     def get_moves(self, state):
-        """Lists all moves '(unitToMove, destination)'.
-
-        [!] Does NOT check if state is terminal.
-        """
+        """Lists all moves '(unitToMove, destination)'. Does NOT check if state is terminal."""
         moves = []
         for pos in state.units_player:
             for dest in self.neighbours[pos]:
@@ -312,13 +317,10 @@ class Environment():
         return State(board, u_p, u_o)
 
     def score(self, state):
-        """Returns +1/-1 if active player won/lost, 0 else.
-
-        [!] Inconsistent if two or more units are on level 3.
-        """
+        """Returns +1/-1 if active player won/lost, 0 else. Inconsistent if two or more units are on level 3."""
         for pos in state.units_player:
             if state.board[pos] == 3:
-                print('[!] score(state) returns 1, illegal state encountered?')
+                LOGGER.warning('score(state) returns 1, illegal state encountered?')
                 return 1
         for pos in state.units_opponent:
             if state.board[pos] == 3:
@@ -379,6 +381,7 @@ class Environment():
 
         return value
 
+
 class Player:
     """Blueprint for a Player.
 
@@ -397,6 +400,7 @@ class Player:
     def choose_play(self, state):
         """Function {State s} -> {State r: reachable from s}"""
         return choice(self.env.get_plays(state))
+
 
 class HumanViaConsole(Player):
     """A human that plays via the console."""
@@ -429,8 +433,7 @@ class HumanViaConsole(Player):
 
     def input_pos(self, valid_list):
         """Asks to input a coordinate from 'validList'."""
-        error = "[!] Valid coordinates are 'xy' with x=row, y=column"\
-            + " being integers in [0,4].\nTry again..."
+        error = "Valid coordinates are 'xy' with x=row, y=column being integers in [0,4].\nTry again..."
 
         while True:
             try:
@@ -450,6 +453,7 @@ class HumanViaConsole(Player):
                 print((row, col), 'is not from', valid_list, '\nTry again...')
             else:
                 return (row, col)
+
 
 class Game:
     """Each instance represents a played game.
@@ -551,10 +555,12 @@ class Game:
                     json_dict = json.load(file)
                     json_dict['Gamelogs'] += [entry]
                     save_data = json_dict
-            else: save_data = {'Gamelogs': [entry]}
+            else:
+                save_data = {'Gamelogs': [entry]}
             with open(path, 'w', encoding='utf-8', newline=None) as file:
                 json.dump(save_data, file, skipkeys=True, indent=4)
         return False
+
 
 class SanGraph(gamesearch.GameGraph):
     """Graph for a Santorini Game.
@@ -572,7 +578,7 @@ class SanGraph(gamesearch.GameGraph):
 
     def __init__(self, env, desc=None, root_names=None, nodes=None):
         if desc is None:
-            desc = 'GameGraph for Santorini, dim: '+str(env.dimension)+\
+            desc = 'GameGraph for Santorini, dim: '+str(env.dimension) +\
                    ', units/player:'+str(env.units_per_player)
         if root_names is None:
             root_names = {s.string() for s in env.start_states}
@@ -580,14 +586,22 @@ class SanGraph(gamesearch.GameGraph):
                 nodes = {}
             for name in root_names:
                 if name not in nodes:
-                    nodes.update({name : self.Node(name)})
+                    nodes.update({name: self.Node(name)})
 
         gamesearch.GameGraph.__init__(self, desc, root_names, nodes)
         self.env = env
 
+    def nodename_of(self, array):
+        """Return the nodename, regardless whether the node has been explored yet"""
+        return State.from_array(array, self.env).string()
+
+    def nparray_of(self, name):
+        """Return the nparray, regardless whether the node has been explored yet"""
+        return State.from_string(name).array()
+
     def add_children(self, node):
         if not node.is_open:
-            print('[!] SanGraph.add_children(node) called on non-open node')
+            LOGGER.warning('SanGraph.add_children(node) called on non-open node')
             return False
 
         node.children = []
@@ -605,10 +619,7 @@ class SanGraph(gamesearch.GameGraph):
 
     @classmethod
     def from_json(cls, string, env):
-        """Returns the GameGraph from a JSON string, inverse of 'to_json'.
-
-        [!] Must be reimplemented for other graphs with different attributes.
-        """
+        """Returns the GameGraph from a JSON string, inverse of 'to_json'."""
         def decode(dct):
             if "__GameGraph__" in dct:
                 return cls(env, dct['desc'], root_names=dct['root_names'],
@@ -634,8 +645,7 @@ class SanGraph(gamesearch.GameGraph):
             file = open(path, 'r', encoding='utf-8', newline=None)
             graph = cls.from_json(file.read(), env)
         except Exception as exc:
-            print('[!] failed to load Gamegraph from', path)
-            print('[!] exception:', exc)
+            LOGGER.warning('failed to load SanGraph from {0}', path)
         finally:
             file.close()
         return graph
