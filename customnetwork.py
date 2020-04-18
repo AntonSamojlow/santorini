@@ -4,17 +4,16 @@ Custom tools around the definition and training of a dense neural network.
 Written by Anton Samojlow, April 2020. [anton.samojlow@web.de]
 """
 
-
 import logging
-from os import path
+from os import path, makedirs
 from time import time
 
-import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
+import tensorflow as tf
 
 LOGGER = logging.getLogger(__name__)
-
+LOGGER.info('using TensorFlow {0}'.format(tf.__git_version__))
 
 class DenseModel():
     """Defines a  NN by specifying the list of layersizes: Either an 
@@ -228,8 +227,12 @@ class Tools():
 
             plt.ylim([(1 - 0.1*np.sign(y_min))*y_min, (1 + 0.1*np.sign(y_max))*y_max])
             plt.grid(True)
-            if savepath is not None:
+            if savepath is not None:   
                 if path.exists(savepath):
                     LOGGER.warning("overriding existing plot '{}'".format(savepath))
+                directory = path.dirname(savepath)
+                if not path.exists(directory):
+                    LOGGER.info("creating directory '{}'".format(directory))
+                    makedirs(directory)
                 plt.savefig(savepath)
                 LOGGER.info("saved plot to '{}'".format(savepath))

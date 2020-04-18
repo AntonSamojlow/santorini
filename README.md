@@ -8,10 +8,10 @@ Collection of search algorithms (i.p. Monte-Carlo and alphabeta type algorithms)
 Implements the Santorini boardgame. Base classes are `Environment` and `State`. More importantly, it abstracts the game into `SanGraph`, an overriden version of `gamesearch.GameGraph`. See docstring for useage examples.
 
 ## alphagym.py
-Provides the tools generate the training examples for a neural network from selfplay. The main method is _pit_: Given the path of two tf.keras.model(s), it generates the play recors between these two neural networks which are assumed to output a prediction _pi_ for the next move and a value _v_ for each node of the the `gamesearch.GameGraph` fot the chosen game. Provides the method 'pit' in two variants: 1) distributing the network predictions over several cpu cores or 2) running it in the default single-cpu-core/gpu mode of tf.keras.
+Provides the tools to generate the training examples for a neural network from selfplay. The main method is _pit_: Given the path of two tf.keras.model(s), it generates the play records between these two neural networks which are assumed to output a prediction _pi_ for the next move and a value _v_ for each node of the the `gamesearch.GameGraph` for the chosen game. The method _pit_ comes in two variants: 1) distributing the network predictions over several cpu cores or 2) running it in the default single-cpu-core/gpu mode of tf.keras.
 
 ## customnet.py
-Some tools do train and evaluate a simple dense Neural NEtwork with the _swish_ activation function (therfore TensorFlow 2.2 is required).
+Some tools do train and evaluate a simple dense Neural Network with the _swish_ activation function (therfore TensorFlow 2.2 is required). Can and maybe should be replace by a different neural network design.
 
 # Implementing an AlphaZero type training loop for some game
 1. Encode the games structures in an instance of `gamesearch.GameGraph`, overriding the methods _nparray_of_ and _nodename_of_ if desired.

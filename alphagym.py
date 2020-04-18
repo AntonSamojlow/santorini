@@ -12,6 +12,7 @@ Written by Anton Samojlow, April 2020. [anton.samojlow@web.de]
 import logging
 import multiprocessing
 import threading
+import queue
 from os import path, makedirs
 from math import sqrt
 from random import choice, choices
@@ -165,7 +166,7 @@ class Gym():
             LOGGER.debug("...done saving results")
 
         return results
-
+    
     def _pit_cpuworker(self, config):
         """Entry point for processsed spawned by Gym.pitrun_cpudistributed()."""
         # check argument
@@ -203,17 +204,18 @@ class Gym():
                 np.array([self.lookahead.game_graph.nparray_of(nodename)]))
 
             logger.debug("finished loading tensorflow models, waiting for commands")
-            while True:
+            while not config.commandq.empty():      
                 x = config.commandq.get()
-                logger.debug('received {} from command queue'.format(x))
-                if x == 'TER':
-                    logging.info('teminating (received TER command)')
-                    break
-                elif x == 'PIT':
-                    logger.debug('working...')
+                if x == 'PIT':
+                    logger.debug('received PIT command, working...')
                     result = self._pit(predictor1, predictor2)
                     logger.debug('...done working, reporting to result queue')
                     config.resultq.put(result)
+                else:
+                    msg = "Unknown command {} received".format(x)
+                    logger.error(msg)
+                    raise Exception(msg)
+            logger.info('worker has finisehd - no more commands left')
 
     def pitrun_cpudistributed(self, jobcount, workercount, modelpath1, modelpath2,
                               multiprocessingloglevel=logging.INFO, savepath=None, livesignal_seconds=300):
@@ -244,9 +246,7 @@ class Gym():
         resultq = multiprocessing.Queue()
         loggingq = multiprocessing.Queue()
         for _ in range(jobcount):
-            commandq.put('PIT')
-        for _ in range(workercount):
-            commandq.put('TER')
+            commandq.put('PIT')       
         LOGGER.info("inserted {} items onto the command queue".format(commandq.qsize()))
 
         pitworkerconfig = Gym.PitWorkerConfig(modelpath1, modelpath2,
@@ -262,8 +262,9 @@ class Gym():
             p.start()
 
         done_record = [(0, time())]  # (jobs done, live_signal): records to calculate ETA
+        deadcount = sum([int(not p.is_alive()) for p in processes])
         # output alive info and eta during the run
-        while not commandq.empty():
+        while resultq.qsize() < jobcount - deadcount:
             if int(time() - done_record[-1][1]) >= livesignal_seconds:
                 # eta calculation: average of processing speed over last 5 live-signals
                 done_record.append((int(jobcount-commandq.qsize()), time()))
@@ -276,29 +277,27 @@ class Gym():
                     eta = timedelta(seconds=int(commandq.qsize()/processing_speed_sec))
                 else:
                     eta = None
-                LOGGER.info("{0} jobs left to process, estimated finish in {1}"
+                LOGGER.info("{0} jobs not started, estimated finish in {1}"
                             .format(commandq.qsize(), eta))
 
                 # check workers alive
-                alivecount = sum([int(p.is_alive()) for p in processes])
-                if alivecount < workercount:
-                    LOGGER.warning("only {0} out of {1} workers are alive"
-                                   .format(sum([int(p.is_alive()) for p in processes]), workercount))
-                if alivecount == 0:
-                    LOGGER.warning("no workers alive, emptying command queue and terminating worker processes")
-                    while not commandq.empty():
-                        commandq.get()
-                    for p in processes:
-                        p.terminate()
-
+                deadcount = sum([int(not p.is_alive()) for p in processes])
+                if deadcount > 0:
+                    LOGGER.warning("{0} out of {1} workers are dead"
+                                   .format(deadcount, workercount))
+                if deadcount == workercount:
+                    LOGGER.warning("no workers alive, stopping")  
+                    break
             else:
                 sleep(1)  # check only each second to save cpu cycles
-
-        LOGGER.debug("command queue is empty")
+        
+        while not commandq.empty():
+                        commandq.get()
+        LOGGER.debug("emptied command queue")
         results = []
         while not resultq.empty():
             results.append(resultq.get())
-        LOGGER.info("received all results")
+        LOGGER.info("received {} results".format(len(results)))
         if savepath is not None:
             LOGGER.debug("saving results to the folder {}"
                          .format(path.abspath(savepath)))
@@ -308,8 +307,11 @@ class Gym():
         # clean up step
         for p in processes:
             LOGGER.debug("waiting for process '{}' to join".format(p.name))
-            p.join()
-            LOGGER.debug("process '{}' has joined".format(p.name))
+            p.join(10)
+            if p.is_alive():
+                LOGGER.warning("process '{}' is still alive after join attempt - terminating it".format(p.name))
+                p.terminate()
+
         LOGGER.debug("sending 'TER' signal to logging queue thread...")
         loggingq.put('TER')
         LOGGER.debug("calling close() on command queue...")

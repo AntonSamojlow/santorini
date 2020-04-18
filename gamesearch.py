@@ -98,7 +98,6 @@ class GameGraph():
             parents ([Node,...])
             children ([Node,...])
             value (int):    Value of the Node.
-            as_nparray:     Returns a numpy-array representation.
 
         Logic/Assumptions:
             n is open       <=> n.children = None
@@ -121,12 +120,7 @@ class GameGraph():
         @property
         def is_terminal(self):
             """See GameGraph.Node.__doc__ and gamesearch.__doc__"""
-            return self.children == []
-
-        @property
-        def as_nparray(self):
-            """Return a numpy representation for the node"""
-            return GameGraph.nparray_of(self.name)
+            return self.children == []       
 
     def __init__(self, desc=None, root_names=None, nodes=None):
         if desc is None:
@@ -216,7 +210,7 @@ class GameGraph():
         """Return the nodename, regardless whether the node has been explored
         yet. Inverse of nparray_of."""
         return "".join([chr(x) for x in array])
-
+    
     def nparray_of(self, name):
         """Return the nparray, regardless whether the node has been explored
         yet. Inverse of nodename_of."""
