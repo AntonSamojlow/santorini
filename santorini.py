@@ -108,8 +108,8 @@ class State():
             for col in range(0, dimension):
                 board[(row, col)] = int(brd[row*dimension + col])
         for i in range(0, units_per_player):
-            units_player += [(int(u_p[0+i]), int(u_p[1+i]))]
-            units_opponent += [(int(u_o[0+i]), int(u_o[1+i]))]
+            units_player += [(int(u_p[0+2*i]), int(u_p[1+2*i]))]
+            units_opponent += [(int(u_o[0+2*i]), int(u_o[1+2*i]))]
         return State(board, units_player, units_opponent)
 
     def array(self):
@@ -320,7 +320,6 @@ class Environment():
         """Returns +1/-1 if active player won/lost, 0 else. Inconsistent if two or more units are on level 3."""
         for pos in state.units_player:
             if state.board[pos] == 3:
-                LOGGER.warning('score(state) returns 1, illegal state encountered?')
                 return 1
         for pos in state.units_opponent:
             if state.board[pos] == 3:
@@ -590,6 +589,12 @@ class SanGraph(gamesearch.GameGraph):
 
         gamesearch.GameGraph.__init__(self, desc, root_names, nodes)
         self.env = env
+
+    def root_copy(self):
+        """
+        Returns a copy of the current graph containing only open roots.
+        """
+        return SanGraph(env=self.env)
 
     def nodename_of(self, array):
         """Return the nodename, regardless whether the node has been explored yet"""

@@ -349,11 +349,10 @@ class LookAhead(gamesearch.SEU):
         - game_graph: Instance of a gamesearch.GameGraph
         - predict_fct: Maps 'game_graph.nodes.key' -> [pi, v] where
             pi and v are numpy arrays of shape (1,DIM_PI) and (1,1)"""
-        gamesearch.SEU.__init__(self, game_graph, data=data)
         if not isinstance(game_graph, gamesearch.GameGraph):
             raise Exception("Validation failed: '{}' is not an instance of gamesearch.GameGraph".format(game_graph))
+        gamesearch.SEU.__init__(self, game_graph, data=data)
 
-        self.game_graph = game_graph
         self.predict_fct = predict_fct
         self.explore_cst = explore_cst
 

@@ -83,8 +83,8 @@ class GameGraph():
         root_names (set):   Holds the root names.
 
     Methods:
-        add_children, node_from_array, print_subtree, to_json, from_json,
-        save, load
+        root_copy, add_children, node_from_array, print_subtree, 
+        to_json, from_json, save, load
     """
     class Node():
         """Node in the Graph.
@@ -135,6 +135,13 @@ class GameGraph():
             self.nodes = {}
         else:
             self.nodes = nodes
+
+    def root_copy(self):
+        """
+        Returns a copy of the current graph containing only open roots.
+        """
+        return GameGraph(root_names=self.root_names, 
+            nodes= {rn : self.Node(rn) for rn in self.root_names})
 
     def add_children(self, node):
         """
@@ -396,19 +403,20 @@ class SEU():
             if root_won == (i % 2 == 0):
                 self.data[path[i].name]['wins'] += 1
 
-    def run(self, root):
+    def run(self, searchroot):
         """Executes the sequence 'select, expand, update'.
 
         Arguments:
             root (Node or Node.name)
         """
-        if isinstance(root, str):
-            root = self.graph.nodes[root]
-        path = self.select(root)
+        if isinstance(searchroot, str):
+            searchroot = self.graph.nodes[searchroot]
+        path = self.select(searchroot)
         path = path[:-1] + self.expand(path[-1])
         self.update(path)
 
-    def run_timed(self, root, max_sec):
+
+    def run_timed(self, searchroot, max_sec):
         """Executes sequences of 'select, expand, update' for max_sec seconds.
 
         Arguments:
@@ -418,9 +426,9 @@ class SEU():
         """
         t_start = time()
         while time() - t_start < max_sec:
-            self.run(root)
+            self.run(searchroot)
 
-    def run_counted(self, root, max_count):
+    def run_counted(self, searchroot, max_count):
         """Executes max_count times the sequence 'select, expand, update'.
 
         Arguments:
@@ -428,7 +436,7 @@ class SEU():
             max_count (int)
         """
         for _ in range(0, max_count):
-            self.run(root)
+            self.run(searchroot)
 
 
 class LCB1(SEU):
