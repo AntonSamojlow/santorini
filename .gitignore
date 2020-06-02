@@ -1,10 +1,14 @@
 *.pylintrc
-*test.py
+script_*
 *.ipynb
 *.ipynb_checkpoints
 *__pycache__
+*.archive
 *.vscode
 *.venv
 *.env
 *.log
+*.json
+*.drawio
 data
+models
