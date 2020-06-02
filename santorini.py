@@ -33,23 +33,7 @@ Example 2, class Game:
     Game([Human, AI], env, verbose=True).save("gamelog.o")
 
 Example 3, class SanGraph:
-    The following executes a LCB1-guided MCTS for 1 sec on the
-    GameGraph for Santorini with dimension 2 and 1 unit per player.
-    It also computes the alphabeta value of some root to depth 13.
-    See also gamesearch.py.
-
-    SG = SanGraph(Environment(dimension=2, units_per_player=1))
-    MCTS = gamesearch.LCB1(SG)
-    print('roots:', SG.root_names)
-    ROOT = SG.nodes[choice(list(SG.root_names))]
-    SG.print_subtree(ROOT, 2, data=MCTS.data)
-    MCTS.run_timed(ROOT, 1)
-    SG.save('sangraph.json')
-    SanGraph.load('sangraph.json').print_subtree(ROOT, 2, data=MCTS.data)
-
-    AB = gamesearch.Alphabeta(SG)
-    AB.tabled(ROOT, 13)
-    SG.print_subtree(ROOT, 2, data=AB.data)
+   ...
 """
 
 from math import sqrt
@@ -61,7 +45,7 @@ import json
 import logging
 
 import numpy
-import gamesearch
+import gamegraph
 
 
 LOGGER = logging.getLogger(__name__)
@@ -110,31 +94,6 @@ class State():
         for i in range(0, units_per_player):
             units_player += [(int(u_p[0+2*i]), int(u_p[1+2*i]))]
             units_opponent += [(int(u_o[0+2*i]), int(u_o[1+2*i]))]
-        return State(board, units_player, units_opponent)
-
-    def array(self):
-        """Returns a numpy-array (dim=1 and length= board_dim** + 2*units_per_player)"""
-        temp = list(self.board.values())
-        for unit in self.units_player:
-            temp.append(unit[0])
-            temp.append(unit[1])
-        for unit in self.units_opponent:
-            temp.append(unit[0])
-            temp.append(unit[1])
-        return numpy.array(temp)
-
-    @classmethod
-    def from_array(cls, array, environment):
-        """Returns a State, inverse of State.array(). Needs the board_dim."""
-        board, dim = {}, environment.dimension
-        units_pp = int((len(array) - dim*dim)/2)
-        for row in range(0, dim):
-            for col in range(0, dim):
-                board[(row, col)] = array[row*dim + col]
-        units_player = [(array[i], array[i+1])
-                        for i in range(dim*dim, dim*dim+units_pp, 2)]
-        units_opponent = [(array[i], array[i+1])
-                          for i in range(dim*dim+units_pp, dim*dim+2*units_pp, 2)]
         return State(board, units_player, units_opponent)
 
     def print(self, file=None, initials=None):
@@ -261,10 +220,9 @@ class Environment():
         return State(new_brd, state.units_opponent, new_u_p)
 
     def get_children(self, parent):
-        """Returns a SORTED list of legal children of the parent state."""
-        return sorted([self.do_play(pos, parent)
-                       for pos in self.get_plays(parent)],
-                      key=lambda s: s.string())
+        """Returns the set list of legal children of the parent state."""
+        return {self.do_play(pos, parent)
+                       for pos in self.get_plays(parent)}
 
     def equiv_class(self, state):
         """Returns symmetrically equivalent states. May contain duplicates."""
@@ -285,7 +243,7 @@ class Environment():
             new_u_o = [trafo(p) for p in state.units_opponent]
             return State(new_brd, new_u_p, new_u_o)
 
-        return [transform_by(trafo) for trafo in trafos]
+        return {transform_by(trafo) for trafo in trafos}
 
     def random_state(self, turn=None):
         """Returns a random state at the specified turn.
@@ -529,7 +487,7 @@ class Game:
             format (str):   Default: 'text'. Other option: 'json'.
         """
 
-        if form is 'text':
+        if form == 'text':
             with open(path, 'a', newline=None) as file:
                 file.write('\n')
                 file.write('1st player:  '+self.players[0].info+'\n')
@@ -542,7 +500,7 @@ class Game:
                     ')', '').replace('(', '').replace(' ', '')
                 file.write('plays:       '+plays_str+'\n')
                 file.write('playtime:    '+str(self.playtime)+' s\n')
-        elif form is 'json':
+        elif form == 'json':
             entry = {'1st player': self.players[0].info,
                      '2nd player': self.players[1].info,
                      'winner': self.result,
@@ -561,7 +519,7 @@ class Game:
         return False
 
 
-class SanGraph(gamesearch.GameGraph):
+class SanGraph(gamegraph.GameGraph):
     """Graph for a Santorini Game.
 
     Attributes:
@@ -575,82 +533,104 @@ class SanGraph(gamesearch.GameGraph):
         add_children, print_subtree, to_json, from_json, save, load,
     """
 
-    def __init__(self, env, desc=None, root_names=None, nodes=None):
-        if desc is None:
-            desc = 'GameGraph for Santorini, dim: '+str(env.dimension) +\
+    def __init__(self, env, childrentable = None, roots = None, description=None):
+        if description is None:
+            description = 'GameGraph for Santorini, dim: '+str(env.dimension) +\
                    ', units/player:'+str(env.units_per_player)
-        if root_names is None:
-            root_names = {s.string() for s in env.start_states}
-            if nodes is None:
-                nodes = {}
-            for name in root_names:
-                if name not in nodes:
-                    nodes.update({name: self.Node(name)})
+        
+        if roots is None:
+            if childrentable is not None:
+                raise Exception("SanGraph called with no roots but a childrentable")
+            roots = tuple([s.string() for s in env.start_states])
+        
+        if childrentable is None:
+            childrentable = {r : None  for r in roots}
 
-        gamesearch.GameGraph.__init__(self, desc, root_names, nodes)
+        super().__init__(childrentable=childrentable, roots=roots, description=description)
         self.env = env
 
-    def root_copy(self):
-        """
-        Returns a copy of the current graph containing only open roots.
-        """
-        return SanGraph(env=self.env)
+    def as_json(self, indent=2):       
+        """Turn the Graph into a (relatively) compact JSON string. May need
+        adjustmemt for specific games / subclassed GameGraphs."""
+        class GameGraphEncoder(json.JSONEncoder):
+            """Custom Encode for class GameGraph."""
 
-    def nodename_of(self, array):
-        """Return the nodename, regardless whether the node has been explored yet"""
-        return State.from_array(array, self.env).string()
-
-    def nparray_of(self, name):
-        """Return the nparray, regardless whether the node has been explored yet"""
-        return State.from_string(name).array()
-
-    def add_children(self, node):
-        if not node.is_open:
-            LOGGER.warning('SanGraph.add_children(node) called on non-open node')
-            return False
-
-        node.children = []
-        for c_state in self.env.get_children(State.from_string(node.name)):
-            c_name = c_state.string()
-            try:
-                node.children += [self.nodes[c_name]]
-                self.nodes[c_name].parents += [node]
-            except KeyError:
-                child_node = self.Node(c_name, parents=[node],
-                                       value=self.env.score(c_state))
-                self.nodes[c_name] = child_node
-                node.children += [child_node]
-        return True
+            def default(self, obj):  # pylint: disable=E0202
+                if isinstance(obj, gamegraph.GameGraph):                  
+                    return {
+                        obj.__class__.__name__: True,
+                        'description' : obj.description,
+                        'environment' : 
+                        {
+                            'dimension' : obj.env.dimension,
+                            'units_per_player' :  obj.env.units_per_player
+                        },
+                        'childrentable' : obj._childrentable,
+                        'roots' : obj.roots}
+                return json.JSONEncoder.default(self, obj)
+        return json.dumps(self, cls=GameGraphEncoder, indent=indent)
 
     @classmethod
-    def from_json(cls, string, env):
-        """Returns the GameGraph from a JSON string, inverse of 'to_json'."""
+    def from_json(cls, string):
+        """Returns the GameGraph from a JSON string, inverse of 'to_json'.
+
+        [!] Must be reimplemented for other graphs with different attributes.
+        """
         def decode(dct):
-            if "__GameGraph__" in dct:
-                return cls(env, dct['desc'], root_names=dct['root_names'],
-                           nodes={n.name: n for n in dct['nodes']})
+            if cls.__name__ in dct:
+                env = dct['environment'] 
+                return cls(
+                    childrentable=dct['childrentable'], 
+                    roots=dct['roots'],
+                    description=dct['description'],
+                    env = Environment(env['dimension'], env['units_per_player']))
+            return dct
+        return json.loads(string, object_hook=decode)     
 
-            if "__GameGraph.Node__" in dct:
-                del dct["__GameGraph.Node__"]
-                return cls.Node(**dct)
+    def expand_at(self, vertex):
+        if self.open_at(vertex):          
+            self._childrentable[vertex] = tuple(sorted([c.string()
+                for c in self.env.get_children(State.from_string(vertex))]))
+            for c in self._childrentable[vertex]:
+                if c not in self._childrentable.keys():    
+                    self._childrentable[c] = None
+        else:
+            raise Exception("{}.expand_at called on non-open vertex {}".format(
+                                        self.__class__, vertex))
 
-        graph = json.loads(string, object_hook=decode)
-        # rebuilding the references between the GameGraph.Node instances:
-        for node in graph.nodes.values():
-            if not node.is_open:
-                node.children = [graph.nodes[c] for c in node.children]
-            if not node.parents is None:
-                node.parents = [graph.nodes[p] for p in node.parents]
-        return graph
+    def score_at(self, vertex):
+        return self.env.score(State.from_string(vertex))         
 
-    @classmethod
-    def load(cls, path, env):
-        """Loads the Graph from a file created by 'GameGraph.save()'."""
-        try:
-            file = open(path, 'r', encoding='utf-8', newline=None)
-            graph = cls.from_json(file.read(), env)
-        except Exception as exc:
-            LOGGER.warning('failed to load SanGraph from {0}', path)
-        finally:
-            file.close()
-        return graph
+    def numpify(self, vertex):
+        """Returns a numpy-array (dim=1 and length= board_dim** + 2*units_per_player)"""
+        state = State.from_string(vertex)
+        temp = list(state.board.values())
+        for unit in state.units_player:
+            temp.append(unit[0])
+            temp.append(unit[1])
+        for unit in state.units_opponent:
+            temp.append(unit[0])
+            temp.append(unit[1])
+        return numpy.array(temp)
+       
+
+    def unnumpify(self, np_array):
+        """Returns a vertex, inverse of numpify. Needs the board_dim."""
+        board, dim = {}, self.env.dimension
+        units_pp = int((len(np_array) - dim*dim)/2)
+        for row in range(0, dim):
+            for col in range(0, dim):
+                board[(row, col)] = np_array[row*dim + col]
+        units_player = [(np_array[i], np_array[i+1])
+                        for i in range(dim*dim, dim*dim+units_pp, 2)]
+        units_opponent = [(np_array[i], np_array[i+1])
+                          for i in range(dim*dim+units_pp, dim*dim+2*units_pp, 2)]
+        return State(board, units_player, units_opponent).string()
+
+    def equivalenceclass_of(self, vertex):            
+        return {s.string() for s in self.env.equiv_class(State.from_string(vertex))}
+
+    def representative_of(self, vertex):
+        return sorted(list(self.equivalenceclass_of(vertex)))[0]
+
+    

@@ -257,7 +257,7 @@ class GameGraph():
         """
         if isfile(path):
             path = path+'_'+str(datetime.now().strftime("%y%m%d_%H%M%S_%f"))
-            LOGGER.warning('filepath exists, changed to {0}', path)
+            LOGGER.warning('filepath exists, changed to {0}'.format(path))
         with open(path, 'w', encoding='utf-8', newline=None) as file:
             file.write(self.to_json())
 
