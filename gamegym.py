@@ -24,13 +24,13 @@ class SelfPlayConfig():
             searchcount : int, 
             predictionbatchsize : int, 
             exploration_const = 2.0, 
-            use_virtualloss = False, 
-            sleeptime_blocked_select = 1,
+            virtualloss = 0.5, 
+            sleeptime_blocked_select = 0.1,
             temperature = 1):
         self.mcts_searchcount = searchcount
         self.mcts_searchthreadcount = searchthreadcount
         self.mcts_exploration_const = exploration_const
-        self.mcts_use_virtualloss = use_virtualloss
+        self.mcts_virtualloss = virtualloss
         self.mcts_sleeptime_blocked_select = sleeptime_blocked_select
         self.predictionbatchsize = predictionbatchsize
         self.temperature = temperature
@@ -127,7 +127,7 @@ class GameGym():
         logger.info('keyboard_watcher started')
         while True:
             text = input()
-            logger.info("registered input {}".format(text))
+            logger.info("registered input '{}'".format(text))
             if text == "exit":
                 endevent.set()
                 return
@@ -166,6 +166,7 @@ class SelfPlayProcess(multiprocessing.Process):
         self.predict_response_q = predict_response_q
         self.recordpool = GameRecordPool()
         self.logger : logging.Logger
+        self.debug_stats = []
     
     @property
     def mcts_graph(self):
@@ -206,7 +207,8 @@ class SelfPlayProcess(multiprocessing.Process):
                 thread_prediction_lock,
                 self.predict_request_q,
                 thread_predict_response_q,
-                self.logging_q,))            
+                self.logging_q,
+                self.debug_stats))            
             thread.start()
             while thread.native_id is None: # wait until thread has started
                 sleep(0.1)
@@ -216,8 +218,9 @@ class SelfPlayProcess(multiprocessing.Process):
             self.thread_predict_response_qs[thread.native_id] = thread_predict_response_q    
         
         while not self.endevent.is_set():
-            self.recordpool.records += self._selfplay()
-            print("current records: {}".format(self.recordpool.records))
+            newrecords = self._selfplay()
+            self.logger.info("adding new playrecords: {}".format(newrecords))
+            self.recordpool.records += newrecords
 
         self.terminateevent.set()
         # unlock threads still waiting for predictions and insert fake prediction 
@@ -274,10 +277,14 @@ class SelfPlayProcess(multiprocessing.Process):
                 with self.mcts_graph_lock:
                     self._update(path)               
                 replies += 1
+        self.logger.info("MCTS finished {} searches, each thread spent on average {} sec waiting during select".format(
+            self.config.mcts_searchcount, 
+            float(sum(self.debug_stats)/self.config.mcts_searchthreadcount) ))
+        self.debug_stats.clear()
         return
 
     def _update(self, path):
-        end_val = self.mcts_searchtable[path[-1]]['Q']     
+        end_val = self.mcts_searchtable[path[-1]]['Q']   
         for i in range(0, len(path) - 1): 
             sign = 1 - 2*int(i % 2 == path.__len__() % 2)
             j = self.mcts_graph.children_at(path[i]).index(path[i+1])
@@ -285,6 +292,7 @@ class SelfPlayProcess(multiprocessing.Process):
             self.mcts_searchtable[path[i]]['Q'] +=\
                 (sign*end_val - self.mcts_searchtable[path[i]]['Q'])\
                 /sum(self.mcts_searchtable[path[i]]['N'])
+            self.mcts_searchtable[path[i]]['VL'] = 0
         return
 
     @staticmethod
@@ -299,7 +307,8 @@ class SelfPlayProcess(multiprocessing.Process):
             prediction_lock : threading.Lock, 
             predict_request_q : Queue, 
             predict_response_q : Queue, 
-            logging_q : Queue):       
+            logging_q : Queue,
+            debug_stats : list):       
         # setup logging
         thread_id = threading.get_ident()
         qh = logging.handlers.QueueHandler(logging_q)
@@ -321,19 +330,25 @@ class SelfPlayProcess(multiprocessing.Process):
             # logger.info("select({})".format(vertex))
             if graph.open_at(vertex) or graph.terminal_at(vertex):
                 return [vertex]
+            t0 = time()
             while vertex not in searchtable:                
-                logger.warning( ("{} not in searchtable: waiting for other threads to finish prediction. " +
-                    "Consider increasing virtualloss. Thread sleeps for {} seconds").format(
-                        vertex,config.mcts_sleeptime_blocked_select))
+                # logger.warning( ("{} not in searchtable: waiting for other threads to finish prediction. " +
+                #     "Consider increasing virtualloss. Thread sleeps for {} seconds").format(
+                #         vertex,config.mcts_sleeptime_blocked_select))                
                 sleep(config.mcts_sleeptime_blocked_select)                
+            debug_stats.append(time()-t0)
+
             # check event here since another blocking thread may have been given 'fake' predictions
             if terminateevent.is_set():
                 return [vertex]
             
+            # thread safe operation - else we need another lock   
+            searchtable[vertex]['VL'] = config.mcts_virtualloss    
+
             visits = searchtable[vertex]['N']
             def U(child):
                 try:
-                    c_val = searchtable[child]['Q']
+                    c_val = searchtable[child]['Q'] + searchtable[child]['VL']
                 except KeyError:
                     c_val = 0
                 j = graph.children_at(vertex).index(child)
@@ -356,14 +371,16 @@ class SelfPlayProcess(multiprocessing.Process):
                     tableentry = {
                         'N': [], 
                         'Q': graph.score_at(vertex), 
-                        'P': []}
+                        'P': [],
+                        'VL': 0}
                 else:
                     prediction = predictor(vertex)
                     tableentry = {
                             'N': [0 for c in graph.children_at(vertex)],
                             'Q': prediction[1],
-                            'P': prediction[0][:len(graph.children_at(vertex))]} 
-                if vertex not in searchtable.keys():
+                            'P': prediction[0][:len(graph.children_at(vertex))],
+                            'VL': 0} 
+                if vertex not in searchtable:
                     searchtable[vertex] = tableentry                 
             return
 
@@ -434,6 +451,7 @@ class PredictorProcess(multiprocessing.Process):
         self.modelpath = modelpath
         self.trygetbatchsize_timeout = trygetbatchsize_timeout
         self.logger : logging.Logger
+        self.debug_stats = {'predict_batches':[]}
 
     def run(self):
         qh = logging.handlers.QueueHandler(self.logging_q)
@@ -441,8 +459,8 @@ class PredictorProcess(multiprocessing.Process):
         self.logger.setLevel(logging.DEBUG)
         self.logger.addHandler(qh)
         self.logger.info("started and initialized logger")
-
-        import tensorflow as tf
+       
+        import tensorflow as tf        
         self.logger.info('imported TensorFlow {0}'.format(tf.__git_version__))
         tflogger = tf.get_logger()
         tflogger.addHandler(qh)
@@ -467,6 +485,7 @@ class PredictorProcess(multiprocessing.Process):
                 except Empty:
                     pass
                 if len(requests) > 0:
+                    self.debug_stats['predict_batches'].append(len(requests))
                     x = np.array([cmd[1] for cmd in requests])
                     self.logger.debug("predicting {} requests: {}".format(len(x), x))
                     predictions = MODEL.predict_on_batch(x)                
@@ -477,7 +496,10 @@ class PredictorProcess(multiprocessing.Process):
                         # self.logger.debug("returning {} from requester {} to outputq".format(prediction, requesterid))
                         self.response_q.put([requesterid, prediction])
             
+            self.logger.info("average predict batch size was {}".format(
+                sum(self.debug_stats['predict_batches'])/len(self.debug_stats['predict_batches'])))
             self.logger.info("endevent received - terminating")
+            
 
 
    

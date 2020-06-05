@@ -581,7 +581,7 @@ class SanGraph(gamegraph.GameGraph):
                 env = dct['environment'] 
                 return cls(
                     childrentable=dct['childrentable'], 
-                    roots=dct['roots'],
+                    roots=tuple(dct['roots']),
                     description=dct['description'],
                     env = Environment(env['dimension'], env['units_per_player']))
             return dct
@@ -595,11 +595,11 @@ class SanGraph(gamegraph.GameGraph):
                 if c not in self._childrentable.keys():    
                     self._childrentable[c] = None
         else:
-            raise Exception("{}.expand_at called on non-open vertex {}".format(
+            raise gamegraph.VertexNotOpen("{}.expand_at called on non-open vertex {}".format(
                                         self.__class__, vertex))
 
     def score_at(self, vertex):
-        return self.env.score(State.from_string(vertex))         
+        return float(self.env.score(State.from_string(vertex)))         
 
     def numpify(self, vertex):
         """Returns a numpy-array (dim=1 and length= board_dim** + 2*units_per_player)"""

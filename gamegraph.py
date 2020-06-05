@@ -10,7 +10,7 @@ def getLogger():
     return LOGGER
 
 class GameGraph():
-    def __init__(self, description=None, childrentable = {}, roots = ()):
+    def __init__(self, description="asd", childrentable = {}, roots = ()):
         self._childrentable = childrentable
         self.roots = roots
         self.description = description
@@ -65,37 +65,39 @@ class GameGraph():
         def decode(dct):
             if cls.__name__ in dct:      
                 return cls(
-                     description=dct['description'],
+                    description=dct['description'],
                     childrentable=dct['childrentable'], 
-                    roots=dct['roots'])
+                    roots=tuple(dct['roots']))
             return dct
         return json.loads(string, object_hook=decode)     
 
     def expand_at(self, vertex):
         if self.open_at(vertex):
-            self._childrentable[vertex] = tuple([vertex + str(i) 
-                                                for i in range(choice([0,1,2]))])            
+            self._childrentable[vertex] = tuple([vertex + str(i) for i in range(choice(range(4)))])            
             for c in self._childrentable[vertex]:
                 self._childrentable[c] = None            
         else:
-            raise Exception("{}.expand_at called on non-open vertex {}".format(
+            raise VertexNotOpen("{}.expand_at called on non-open vertex {}".format(
                                         self.__class__, vertex))
            
     def open_at(self, vertex):        
         return self._childrentable[vertex] is None
 
-    def terminal_at(self, vertex):        
+    def terminal_at(self, vertex):
+        if self.open_at(vertex):
+            raise VertexOpen("{}.terminal_at called on open vertex {}".format(
+                                        self.__class__, vertex)) 
         return len(self._childrentable[vertex]) == 0
 
-    def score_at(self, vertex):
-        return 0
+    def score_at(self, vertex) -> float:
+        return 0.0
 
     def children_at(self, vertex, autoexpand = False) -> tuple:
         if self.open_at(vertex):
             if autoexpand:
                 self.expand_at(vertex)
             else:
-                raise Exception("{}.children_at called on open vertex {}".format(
+                raise VertexOpen("{}.children_at called on open vertex {}".format(
                                         self.__class__, vertex))           
         return self._childrentable[vertex]
     
@@ -174,3 +176,11 @@ class GameGraph():
                 self.print_subtree_at(child, max_depth-1, __current_depth+1, data)
         if __current_depth == 0:  # print footer
             print(''.ljust(2+node_info.__len__(), '-'))
+
+class VertexOpen(Exception):
+    """Operation not allowed on an open vertex."""
+    pass
+
+class VertexNotOpen(Exception):
+    """Operation not allowed on an non-open vertex."""
+    pass
