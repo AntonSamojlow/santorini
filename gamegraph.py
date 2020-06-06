@@ -40,7 +40,7 @@ class GameGraph():
                 edges += [(p,c) for c in children]
         return set(edges)
     
-    def as_json(self, indent=2):       
+    def as_json(self, indent=2) -> str:       
         """Turn the Graph into a (relatively) compact JSON string. May need
         adjustmemt for specific games / subclassed GameGraphs."""
         class GameGraphEncoder(json.JSONEncoder):
@@ -57,7 +57,7 @@ class GameGraph():
         return json.dumps(self, cls=GameGraphEncoder, indent=indent)
 
     @classmethod
-    def from_json(cls, string):
+    def from_json(cls, string) -> 'GameGraph':
         """Returns the GameGraph from a JSON string, inverse of 'to_json'.
 
         [!] Must be reimplemented for other graphs with different attributes.
@@ -120,7 +120,7 @@ class GameGraph():
     def representative_of(self, vertex):
         return vertex
 
-    def copy(self):
+    def copy(self) -> 'GameGraph':
         return self.from_json(self.as_json(indent=0))
     
     def truncate_to_roots(self):
