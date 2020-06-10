@@ -10,9 +10,14 @@ def getLogger():
     return LOGGER
 
 class GameGraph():
-    def __init__(self, description="asd", childrentable = {}, roots = ()):
+    def __init__(self, 
+        description="asd", 
+        childrentable = {}, 
+        roots = (),
+        outdegree_max = 4):
         self._childrentable = childrentable
         self.roots = roots
+        self.outdegree_max = outdegree_max
         self.description = description
 
         # examplestructure
@@ -52,6 +57,7 @@ class GameGraph():
                         obj.__class__.__name__: True,
                         'description' : obj.description,
                         'childrentable' : obj._childrentable,
+                        'outdegree_max': obj.outdegree_max,
                         'roots' : obj.roots}
                 return json.JSONEncoder.default(self, obj)
         return json.dumps(self, cls=GameGraphEncoder, indent=indent)
@@ -67,13 +73,15 @@ class GameGraph():
                 return cls(
                     description=dct['description'],
                     childrentable=dct['childrentable'], 
-                    roots=tuple(dct['roots']))
+                    roots=tuple(dct['roots']),
+                    outdegree_max=int(dct['outdegree_max']))
             return dct
         return json.loads(string, object_hook=decode)     
 
     def expand_at(self, vertex):
         if self.open_at(vertex):
-            self._childrentable[vertex] = tuple([vertex + str(i) for i in range(choice(range(4)))])            
+            self._childrentable[vertex] = tuple([vertex + str(i) 
+                    for i in range(choice(range(self.outdegree_max)))])            
             for c in self._childrentable[vertex]:
                 self._childrentable[c] = None            
         else:

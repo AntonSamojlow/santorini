@@ -3,14 +3,18 @@ import logging.handlers
 import multiprocessing
 import multiprocessing.queues as mpq
 import threading
+import os
 
-from os import path, makedirs
 from time import time, sleep
+from distutils.dir_util import copy_tree
+from dataclasses import dataclass
+
+import json
 
 from namedqueues import NamedMultiProcessingQueue
 from gamegraph import GameGraph
 from processes.trainer import Trainer, TrainConfig
-from processes.predictor import Predictor 
+from processes.predictor import Predictor, PredictConfig
 from processes.selfplayer import Selfplayer, SelfPlayConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -18,66 +22,138 @@ LOGGER = logging.getLogger(__name__)
 def getLogger():
     return LOGGER
 
-class GymSettings():
-    def __init__(self, 
-        mcts_config : SelfPlayConfig, 
-        train_config : TrainConfig):
-        self.mcts_config = mcts_config
-        self.train_config = train_config
+@dataclass
+class GymConfig():
+    predict: PredictConfig
+    selfplay: SelfPlayConfig 
+    train: TrainConfig
+    logsizelimit_kB: float = 100
+    logbackups: int = 9
+    loglevel: str = "DEBUG"
+    # TODO: add loading from file
+
+@dataclass
+class GymPath():
+    basefolder : str
+
+    @property
+    def config_file(self) ->str:
+        return "{}/config.json".format(self.basefolder)        
+    @property
+    def weights_folder(self) ->str:
+        return "{}/weights/".format(self.basefolder)
+    @property
+    def currentmodel_folder(self) ->str:
+        return "{}/currentmodel/".format(self.basefolder)
+    @property
+    def gamerecordpool_folder(self) ->str:
+        return "{}/gamerecordpool/".format(self.basefolder)
+    @property
+    def log_folder(self) ->str:
+        return "{}/logs/".format(self.basefolder)
+    @property
+    def subfolders(self) -> list:
+        return [self.currentmodel_folder, self.gamerecordpool_folder, 
+        self.log_folder, self.weights_folder]
 
 
 class GameGym():
-    def __init__(self, graph, settings, sessionfolder, intialmodelpath = None):
+    def __init__(self,         
+        session_path: str, 
+        graph: GameGraph,
+        intialmodelpath: str = None,
+        gym_config: GymConfig = None):
         self.graph = graph
-        if not isinstance(settings, GymSettings):
-            LOGGER.error("settings need to be of type {}".format(GymSettings.__class__))
-        self.settings = settings
-        self._sessionfolder = sessionfolder
-        if intialmodelpath is None:
-            self._modelpath = "{}/models/current/".format(self.sessionfolder)
+        self._path = GymPath(session_path)
+
+        if os.path.exists(self.path.basefolder):
+            for p in self.path.subfolders:
+                if not os.path.exists(p):
+                    raise Exception("Can not load GameGym from basefolder '{}' - missing folder '{}'".format(self.path.basefolder, p))
+        else:           
+            for p in self.path.subfolders:                
+                    os.makedirs(p)
+        
+        if gym_config == None:
+            raise Exception("Can not initialize GameGym, loading config not yet implemented")
         else:
-            self._modelpath = intialmodelpath
+            self.config = gym_config
+        
+        logpath = os.path.join(self.path.log_folder,"{}.log".format(type(self).__name__))
 
+        rfh = logging.handlers.RotatingFileHandler(logpath, 
+                maxBytes=self.config.logsizelimit_kB*1000, backupCount=self.config.logbackups)
+        rfh.setLevel(self.config.loglevel)
+        rfh.setFormatter( logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s'))
+        LOGGER.addHandler(rfh)
+        if not intialmodelpath is None:            
+            copy_tree(intialmodelpath, self.path.currentmodel_folder)
+            LOGGER.debug("copied initial model from '{}' to '{}'".format(intialmodelpath, self.path.currentmodel_folder))
+       
+  
     @property
-    def sessionfolder(self):
-        return self.sessionfolder
-
-    @property
-    def modelpath(self):
-        return self._modelpath
+    def path(self):
+        return self._path
 
     def resume(self):
-        # 1. Start - initialize ressources         
-        # # events         
+        # ----------------------------------------------------------------------
+        # 1. Start - initialize ressources
+        # ----------------------------------------------------------------------       
+        
+        # events         
         endevent = multiprocessing.Event()
         newmodelevent = multiprocessing.Event()
         events = [endevent, newmodelevent]
+        
         # queues
         logging_q = NamedMultiProcessingQueue("logging_q")
         predict_request_q = NamedMultiProcessingQueue("predict_request_q")
         predict_response_q = NamedMultiProcessingQueue("predict_response_q")
         queues = [logging_q, predict_request_q, predict_response_q]
+        
         # start threads
-        loggingthread = threading.Thread(target=self.__class__._distributed_logger,
-            args=(logging_q,), name="logging_thread")
-        keyboard_reader_thread= threading.Thread(
-            target=self._keyboard_reader,
-            args=(endevent, ),
-            name="keyboard_reader")
-
-     
-        threads = [loggingthread, keyboard_reader_thread]
+        loggingthread = threading.Thread(
+            target=self.__class__._distributed_logger,
+            args=(logging_q,), 
+            name="logging_thread")
+        keyboard_listener_thread= threading.Thread(
+            target=self._keyboard_listener,
+            args=(endevent,),
+            name="keyboard_reader")     
+        threads = [loggingthread, keyboard_listener_thread]
+        
         # processes   
-        trainer_proc = Trainer(self.modelpath, self.settings.train_config, 
-                                            endevent, newmodelevent, logging_q)
-        predictor_proc = Predictor(logging_q, predict_request_q, predict_response_q,
-                    endevent, newmodelevent, 10, self.modelpath)      
-        selfplayer_proc = Selfplayer(self.graph, self.settings.mcts_config, endevent, 
-                    logging_q, predict_request_q, predict_response_q)
+        trainer_proc = Trainer(
+                self.config.train,
+                endevent, 
+                newmodelevent,
+                logging_q, 
+                self.path.currentmodel_folder, 
+                self.path.weights_folder, 
+                self.path.gamerecordpool_folder)
+
+        predictor_proc = Predictor(
+                self.config.predict,
+                endevent,
+                newmodelevent,
+                logging_q,
+                predict_request_q,
+                predict_response_q,
+                self.path.currentmodel_folder)
+
+        selfplayer_proc = Selfplayer(self.config.selfplay,
+                endevent,
+                logging_q,
+                predict_request_q,
+                predict_response_q,
+                self.graph,
+                self.path.gamerecordpool_folder)          
         
         processes = [trainer_proc, predictor_proc, selfplayer_proc]
 
-        # 2. Run...
+        # ----------------------------------------------------------------------
+        # 2. Run - start threads, process and handle until endevent
+        # ----------------------------------------------------------------------
         # start threads
         for t in threads:
             t.start()
@@ -92,7 +168,9 @@ class GameGym():
         while not endevent.is_set():
             sleep(1)
 
+        # ----------------------------------------------------------------------
         # 3. Endphase - cleaning up ressources
+        # ----------------------------------------------------------------------
         LOGGER.info("endevent was set")
         logging_q.put('TER')
         
@@ -124,12 +202,12 @@ class GameGym():
         return
     
     @staticmethod
-    def _keyboard_reader(endevent : threading.Event):
+    def _keyboard_listener(endevent : threading.Event):
         """Entry for a thread waiting for keyboard input."""
         threadname = threading.currentThread().getName()
         logger = logging.getLogger(threadname)
         logger.setLevel(logging.DEBUG)
-        logger.info('keyboard_watcher started')
+        logger.info('keyboard_listener started')
         while True:
             text = input()
             logger.info("registered input '{}'".format(text))
@@ -150,4 +228,5 @@ class GameGym():
                 break
             rootlogger = logging.getLogger()
             rootlogger.handle(record)
-  
+
+            

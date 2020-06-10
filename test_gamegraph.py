@@ -3,7 +3,7 @@ from gamegraph import GameGraph, VertexNotOpen, VertexOpen
 from random import choice, sample
 from numpy import ndarray
 
-import santorini
+
 
 # parameter to limit the number of checks for large (custom) GameGraphs
 MAX_VERTEX_CHECK = 1000
@@ -11,6 +11,10 @@ MAX_VERTEX_CHECK = 1000
 @pytest.fixture
 def Graph():
     G = GameGraph()
+    
+    # import santorini
+    # G = santorini.SanGraph(santorini.Environment(5,2))
+    
     v = choice(list(G.roots))
     while True:
         try:
@@ -46,6 +50,7 @@ def test_raise_open_nonopen(Graph : GameGraph):
 def test_attributetypes(Graph : GameGraph):
     assert isinstance(Graph.description, str) 
     assert isinstance(Graph.edges, set)
+    assert isinstance(Graph.outdegree_max, int)
     assert isinstance(Graph.roots, tuple)
     assert isinstance(Graph.vertices, set)
     assert isinstance(Graph._childrentable, dict)

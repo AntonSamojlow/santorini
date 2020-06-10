@@ -151,8 +151,8 @@ class Environment():
 
     def __init__(self, dimension=5, units_per_player=2):
         self.dimension = dimension
-        self.units_per_player = units_per_player
-
+        self.units_per_player = units_per_player       
+        
         # computing the neighbour positions
         self.neighbours = {}
         for row in range(0, dimension):
@@ -533,20 +533,38 @@ class SanGraph(gamegraph.GameGraph):
         add_children, print_subtree, to_json, from_json, save, load,
     """
 
-    def __init__(self, env, childrentable = None, roots = None, description=None):
+    def __init__(self, 
+        env : Environment, 
+        childrentable = None, 
+        roots = None, 
+        description=None):
+
         if description is None:
             description = 'GameGraph for Santorini, dim: '+str(env.dimension) +\
-                   ', units/player:'+str(env.units_per_player)
-        
+                   ', units/player:'+str(env.units_per_player)        
         if roots is None:
             if childrentable is not None:
                 raise Exception("SanGraph called with no roots but a childrentable")
-            roots = tuple([s.string() for s in env.start_states])
-        
+            roots = tuple([s.string() for s in env.start_states])        
         if childrentable is None:
             childrentable = {r : None  for r in roots}
+        outdegree_max_table = {
+            (3,1) : 27,
+            (3,2) : 28,
+            (4,1) : 46,
+            (4,2) : 66,
+            (5,1) : 63,
+            (5,2) : 100}
+            
+        try:
+            super().__init__(
+                childrentable=childrentable, 
+                roots=roots, 
+                description=description, 
+                outdegree_max=outdegree_max_table[(env.dimension, env.units_per_player)] )
+        except KeyError:
+            raise Exception("Failed to generate graph - maximal outdegree unknown for dimension {} and {} units per player".format(env.dimension, env.units_per_player))
 
-        super().__init__(childrentable=childrentable, roots=roots, description=description)
         self.env = env
 
     def as_json(self, indent=2):       

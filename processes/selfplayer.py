@@ -4,53 +4,86 @@ import multiprocessing
 import multiprocessing.queues as mpq
 import threading
 import queue
+import os
 
 from math import sqrt
 from time import time, sleep
+from datetime import datetime
 from random import choice, choices
+from collections import deque
+from dataclasses import dataclass
+
+import numpy as np
 
 from namedqueues import NamedQueue
 from gamegraph import GameGraph
 
+@dataclass
 class SelfPlayConfig():
-    def __init__(self, 
-            searchthreadcount : int, 
-            searchcount : int, 
-            predictionbatchsize : int, 
-            exploration_const = 2.0, 
-            virtualloss = 0.5, 
-            sleeptime_blocked_select = 0.1,
-            temperature = 1):
-        self.mcts_searchcount = searchcount
-        self.mcts_searchthreadcount = searchthreadcount
-        self.mcts_exploration_const = exploration_const
-        self.mcts_virtualloss = virtualloss
-        self.mcts_sleeptime_blocked_select = sleeptime_blocked_select
-        self.predictionbatchsize = predictionbatchsize
-        self.temperature = temperature
-
+    searchthreadcount : int
+    searchcount : int
+    exploration_const: float = 2.0 
+    virtualloss: float = 0.1
+    sleeptime_blocked_select: float = 0.1
+    temperature: float = 1.0
+     
 class GameRecordPool():
-    def __init__(self):
-        self.records = []
+    def __init__(self, graph : GameGraph, gamerecordpool_path : str):
+        self.graph = graph
+        self._records = deque([])
+        self.currentBatchNr = 0
+        self.folderpath = "{}/{}".format(gamerecordpool_path,"active")
+        # self.folderpath = "{}/{}".format(gamerecordpool_path, datetime.now().strftime("%Y-%m-%d %H_%M_%S"))
+        self.batchSize = 50
+        if not os.path.exists(self.folderpath):
+            os.makedirs(self.folderpath)
+
+    def append(self, newrecords):
+        for r in newrecords:
+            self._records.append(r)
+        while len(self._records) > self.batchSize:
+            self._dump_batch()
+
+    def _dump_batch(self, count=None):
+        if count == None:
+            count = self.batchSize
+        x, val_vec, pi_vec = [], [], []
+        log =  [self._records.popleft() for _ in range(min(len(self._records), count))]
+        for turndata in log:
+            pi = turndata[1]
+            if pi is not None:
+                x += [self.graph.numpify(turndata[0])]
+                val_vec += [float(turndata[2])]
+                # regularize dimension of pi and normalize to a proper probability
+                pi = [p/sum(pi) for p in pi]
+                for _ in range(len(pi), self.graph.outdegree_max):
+                    pi.append(0)
+                pi_vec += [pi]
+        np.savetxt(os.path.join(self.folderpath, '{}.x.csv'.format(self.currentBatchNr)), np.array(x), delimiter=',')
+        np.savetxt(os.path.join(self.folderpath, '{}.y_val.csv'.format(self.currentBatchNr)), np.array(val_vec), delimiter=',')
+        np.savetxt(os.path.join(self.folderpath, '{}.y_pi.csv'.format(self.currentBatchNr)), np.array(pi_vec), delimiter=',')
+        self.currentBatchNr += 1
 
 class Selfplayer(multiprocessing.Process):
     def __init__(self,
-            graph : GameGraph, 
-            selfplayconfig : SelfPlayConfig, 
-            endevent : multiprocessing.Event, 
-            logging_q : mpq.Queue, 
+            config : SelfPlayConfig, 
+            endevent : multiprocessing.Event,          
+            logging_q : mpq.Queue,            
             predict_request_q : mpq.Queue, 
-            predict_response_q : mpq.Queue):
+            predict_response_q : mpq.Queue,
+            graph : GameGraph,
+            gamerecordpool_path : str):
         super().__init__()
         graph.truncate_to_roots()
         self._mcts_graph = graph.copy()
         self._mcts_searchtable = {}
-        self.config = selfplayconfig
+        self.config = config
         self.endevent = endevent
         self.logging_q = logging_q
         self.predict_request_q = predict_request_q
         self.predict_response_q = predict_response_q
-        self.recordpool = GameRecordPool()
+        self.recordpool = GameRecordPool(graph=graph, 
+                    gamerecordpool_path=gamerecordpool_path )
         self.logger : logging.Logger
         self.debug_stats = []
 
@@ -80,7 +113,7 @@ class Selfplayer(multiprocessing.Process):
         self.search_threads = [] 
         self.thread_prediction_locks = {}   
         self.thread_predict_response_qs = {}   
-        for _ in range(self.config.mcts_searchthreadcount):
+        for _ in range(self.config.searchthreadcount):
             thread_prediction_lock = threading.Lock()
             thread_predict_response_q = NamedQueue("")
             thread = threading.Thread(target=_MCTSsearcher,
@@ -109,8 +142,9 @@ class Selfplayer(multiprocessing.Process):
 
         while not self.endevent.is_set():
             newrecords = self._selfplay()
-            self.logger.info("adding new playrecords: {}".format(newrecords))
-            self.recordpool.records += newrecords
+            self.recordpool.append(newrecords)
+            self.logger.info("appended {} new records to game record pool".format(len(newrecords)))
+           
 
         self.terminateevent.set()
         # unlock threads still waiting for predictions and insert fake prediction 
@@ -122,6 +156,9 @@ class Selfplayer(multiprocessing.Process):
                 except RuntimeError:
                     logging.warning("failed to release predict_lock for thread {}".format(t.native_id))
                     pass
+
+        self.logger.info("writing playrecords to file...")
+        self.logger.info("...done")
         
         for t in self.search_threads:
             t.join(5)
@@ -163,10 +200,10 @@ class Selfplayer(multiprocessing.Process):
 
     def _MCTSrun(self, vertex):
         self.logger.debug("MCTSrun called on vertex {}".format(vertex))  
-        for _ in range(0, self.config.mcts_searchcount):
+        for _ in range(0, self.config.searchcount):
             self.mcts_request_q.put(vertex)
         replies = 0
-        while replies < self.config.mcts_searchcount:
+        while replies < self.config.searchcount:
             if self.endevent.is_set():
                 self.logger.debug("endevent received - exiting _MCTSrun")               
                 return
@@ -181,8 +218,8 @@ class Selfplayer(multiprocessing.Process):
                     self._update(path)               
                 replies += 1
         self.logger.info("MCTS finished {} searches, each thread spent on average {} sec waiting during select".format(
-            self.config.mcts_searchcount, 
-            float(sum(self.debug_stats)/self.config.mcts_searchthreadcount) ))
+            self.config.searchcount, 
+            float(sum(self.debug_stats)/self.config.searchthreadcount) ))
         self.debug_stats.clear()
         return
 
@@ -234,11 +271,8 @@ def _MCTSsearcher(
         if graph.open_at(vertex) or graph.terminal_at(vertex):
             return [vertex]
         t0 = time()
-        while vertex not in searchtable:                
-            # logger.warning( ("{} not in searchtable: waiting for other threads to finish prediction. " +
-            #     "Consider increasing virtualloss. Thread sleeps for {} seconds").format(
-            #         vertex,config.mcts_sleeptime_blocked_select))                
-            sleep(config.mcts_sleeptime_blocked_select)                
+        while vertex not in searchtable:
+            sleep(config.sleeptime_blocked_select)                
         debug_stats.append(time()-t0)
 
         # check event here since another blocking thread may have been given 'fake' predictions
@@ -246,7 +280,7 @@ def _MCTSsearcher(
             return [vertex]
         
         # thread safe operation - else we need another lock   
-        searchtable[vertex]['VL'] = config.mcts_virtualloss    
+        searchtable[vertex]['VL'] = config.virtualloss    
 
         visits = searchtable[vertex]['N']
         def U(child):
@@ -256,7 +290,7 @@ def _MCTSsearcher(
                 c_val = 0
             j = graph.children_at(vertex).index(child)
             prob = searchtable[vertex]['P'][j]
-            return c_val - config.mcts_exploration_const*prob*sqrt(sum(visits))/(1+visits[j])
+            return c_val - config.exploration_const*prob*sqrt(sum(visits))/(1+visits[j])
         return [vertex] + select(min(graph.children_at(vertex), key=U))
 
     def expand(vertex):
