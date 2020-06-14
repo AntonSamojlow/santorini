@@ -2,26 +2,21 @@ import logging
 import logging.handlers
 import multiprocessing
 import multiprocessing.queues as mpq
-
-from dataclasses import dataclass
+import os
 
 import numpy as np
 
-@dataclass
-class PredictConfig():
-    batchsize: int
-    trygetbatchsize_timeout = 0.1
-
+import gymdata
 
 class Predictor(multiprocessing.Process):
     def __init__(self, 
-        config: PredictConfig,        
+        config: gymdata.PredictConfig,     
+        gympath: gymdata.GymPath,   
         endevent : multiprocessing.Event, 
         newmodelevent : multiprocessing.Event,
         logging_q : mpq.Queue, 
         request_q : mpq.Queue, 
-        response_q : mpq.Queue,       
-        modelpath : str):
+        response_q : mpq.Queue):
         
         super().__init__()
         self.logging_q = logging_q
@@ -29,15 +24,18 @@ class Predictor(multiprocessing.Process):
         self.response_q = response_q
         self.endevent = endevent
         self.newmodelevent = newmodelevent
-        self.modelpath = modelpath
-        self.config = config               
-        self.logger : logging.Logger
+        self.config = config
+        self.gympath = gympath               
         self.debug_stats = {'predict_batches':[]}
 
     def run(self):
+        # logging setup
+        self.logger = logging.getLogger(type(self).__name__)
+        self.logger.setLevel(self.config.logging.loglevel)
+        logfilepath = os.path.join(self.gympath.log_folder,"{}.log".format(type(self).__name__))
+        self.config.logging.addRotatingFileHandler(self.logger, logfilepath)
         qh = logging.handlers.QueueHandler(self.logging_q)
-        self.logger = logging.getLogger(self.name)
-        self.logger.setLevel(logging.DEBUG)
+        qh.setLevel(logging.INFO)
         self.logger.addHandler(qh)
         self.logger.info("started and initialized logger")
        
@@ -56,13 +54,13 @@ class Predictor(multiprocessing.Process):
         self.logger.info("using: {}".format(logical_gpus[0].name))
         with tf.device(logical_gpus[0].name):
         # with tf.device("/cpu:0"):
-            MODEL = tf.keras.models.load_model(self.modelpath)    
-            self.logger.info("tf.keras.model loaded from {}, waiting for requests...".format(self.modelpath))
+            MODEL = tf.keras.models.load_model(self.gympath.currentmodel_folder)    
+            self.logger.info("tf.keras.model loaded from {}, waiting for requests...".format(self.gympath.currentmodel_folder))
             while not self.endevent.is_set():
                 if self.newmodelevent.is_set():
-                    MODEL = tf.keras.models.load_model(self.modelpath)    
+                    MODEL = tf.keras.models.load_model(self.gympath.currentmodel_folder)    
                     self.newmodelevent.clear()
-                    self.logger.info("tf.keras.model reloaded from {}".format(self.modelpath))
+                    self.logger.info("tf.keras.model reloaded from {}".format(self.gympath.currentmodel_folder))
              
                 requests = []
                 try:

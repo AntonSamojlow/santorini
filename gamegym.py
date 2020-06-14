@@ -4,67 +4,31 @@ import multiprocessing
 import multiprocessing.queues as mpq
 import threading
 import os
-
 from time import time, sleep
 from distutils.dir_util import copy_tree
-from dataclasses import dataclass
 
 import json
 
+import gymdata
 from namedqueues import NamedMultiProcessingQueue
 from gamegraph import GameGraph
-from processes.trainer import Trainer, TrainConfig
-from processes.predictor import Predictor, PredictConfig
-from processes.selfplayer import Selfplayer, SelfPlayConfig
+from processes.trainer import Trainer
+from processes.predictor import Predictor
+from processes.selfplayer import Selfplayer
 
 LOGGER = logging.getLogger(__name__)
 
 def getLogger():
     return LOGGER
 
-@dataclass
-class GymConfig():
-    predict: PredictConfig
-    selfplay: SelfPlayConfig 
-    train: TrainConfig
-    logsizelimit_kB: float = 100
-    logbackups: int = 9
-    loglevel: str = "DEBUG"
-    # TODO: add loading from file
-
-@dataclass
-class GymPath():
-    basefolder : str
-
-    @property
-    def config_file(self) ->str:
-        return "{}/config.json".format(self.basefolder)        
-    @property
-    def weights_folder(self) ->str:
-        return "{}/weights/".format(self.basefolder)
-    @property
-    def currentmodel_folder(self) ->str:
-        return "{}/currentmodel/".format(self.basefolder)
-    @property
-    def gamerecordpool_folder(self) ->str:
-        return "{}/gamerecordpool/".format(self.basefolder)
-    @property
-    def log_folder(self) ->str:
-        return "{}/logs/".format(self.basefolder)
-    @property
-    def subfolders(self) -> list:
-        return [self.currentmodel_folder, self.gamerecordpool_folder, 
-        self.log_folder, self.weights_folder]
-
-
-class GameGym():
+class GameGym(): 
     def __init__(self,         
         session_path: str, 
         graph: GameGraph,
         intialmodelpath: str = None,
-        gym_config: GymConfig = None):
+        gym_config: gymdata.GymConfig = None):
         self.graph = graph
-        self._path = GymPath(session_path)
+        self._path = gymdata.GymPath(session_path)
 
         if os.path.exists(self.path.basefolder):
             for p in self.path.subfolders:
@@ -79,17 +43,12 @@ class GameGym():
         else:
             self.config = gym_config
         
-        logpath = os.path.join(self.path.log_folder,"{}.log".format(type(self).__name__))
+        logfilepath = os.path.join(self.path.log_folder,"{}.log".format(type(self).__name__))
+        gym_config.logging.addRotatingFileHandler(LOGGER, logfilepath)
 
-        rfh = logging.handlers.RotatingFileHandler(logpath, 
-                maxBytes=self.config.logsizelimit_kB*1000, backupCount=self.config.logbackups)
-        rfh.setLevel(self.config.loglevel)
-        rfh.setFormatter( logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s'))
-        LOGGER.addHandler(rfh)
         if not intialmodelpath is None:            
             copy_tree(intialmodelpath, self.path.currentmodel_folder)
             LOGGER.debug("copied initial model from '{}' to '{}'".format(intialmodelpath, self.path.currentmodel_folder))
-       
   
     @property
     def path(self):
@@ -125,29 +84,28 @@ class GameGym():
         # processes   
         trainer_proc = Trainer(
                 self.config.train,
+                self.path,
                 endevent, 
                 newmodelevent,
-                logging_q, 
-                self.path.currentmodel_folder, 
-                self.path.weights_folder, 
-                self.path.gamerecordpool_folder)
+                logging_q)
 
         predictor_proc = Predictor(
                 self.config.predict,
+                self.path,
                 endevent,
                 newmodelevent,
                 logging_q,
                 predict_request_q,
-                predict_response_q,
-                self.path.currentmodel_folder)
+                predict_response_q)
 
-        selfplayer_proc = Selfplayer(self.config.selfplay,
+        selfplayer_proc = Selfplayer(
+                self.config.selfplay,
+                self.path,
                 endevent,
                 logging_q,
                 predict_request_q,
                 predict_response_q,
-                self.graph,
-                self.path.gamerecordpool_folder)          
+                self.graph)          
         
         processes = [trainer_proc, predictor_proc, selfplayer_proc]
 
@@ -217,16 +175,15 @@ class GameGym():
            
     @staticmethod
     def _distributed_logger(logging_q : mpq.Queue):
-        """Entry for a thread handling logging from the workers via queues."""
+        """Entry for a thread handling logging from subprocesses via queues."""
         threadname = threading.currentThread().getName()
-        logger = logging.getLogger(threadname)
-        logger.info('distributed_logger starting')
+        thread_logger = logging.getLogger(threadname)
+        thread_logger.info('distributed_logger starting')
         while True:
             record = logging_q.get(block=True)
             if record == 'TER':
-                logger.info('received {}'.format(record))
+                thread_logger.info('received {}'.format(record))
                 break
-            rootlogger = logging.getLogger()
-            rootlogger.handle(record)
+            LOGGER.handle(record)
 
             

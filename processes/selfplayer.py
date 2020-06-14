@@ -11,22 +11,13 @@ from time import time, sleep
 from datetime import datetime
 from random import choice, choices
 from collections import deque
-from dataclasses import dataclass
 
 import numpy as np
 
+import gymdata
 from namedqueues import NamedQueue
 from gamegraph import GameGraph
 
-@dataclass
-class SelfPlayConfig():
-    searchthreadcount : int
-    searchcount : int
-    exploration_const: float = 2.0 
-    virtualloss: float = 0.1
-    sleeptime_blocked_select: float = 0.1
-    temperature: float = 1.0
-     
 class GameRecordPool():
     def __init__(self, graph : GameGraph, gamerecordpool_path : str):
         self.graph = graph
@@ -66,24 +57,25 @@ class GameRecordPool():
 
 class Selfplayer(multiprocessing.Process):
     def __init__(self,
-            config : SelfPlayConfig, 
+            config : gymdata.SelfPlayConfig, 
+            gympath: gymdata.GymPath,
             endevent : multiprocessing.Event,          
             logging_q : mpq.Queue,            
             predict_request_q : mpq.Queue, 
             predict_response_q : mpq.Queue,
-            graph : GameGraph,
-            gamerecordpool_path : str):
+            graph : GameGraph):
         super().__init__()
         graph.truncate_to_roots()
         self._mcts_graph = graph.copy()
         self._mcts_searchtable = {}
         self.config = config
-        self.endevent = endevent
+        self.endevent = endevent         
         self.logging_q = logging_q
         self.predict_request_q = predict_request_q
         self.predict_response_q = predict_response_q
         self.recordpool = GameRecordPool(graph=graph, 
-                    gamerecordpool_path=gamerecordpool_path )
+                    gamerecordpool_path=gympath.gamerecordpool_folder)
+        self.gympath = gympath
         self.logger : logging.Logger
         self.debug_stats = []
 
@@ -96,11 +88,15 @@ class Selfplayer(multiprocessing.Process):
         return self._mcts_searchtable
 
     def run(self):
+       # logging setup
+        self.logger = logging.getLogger(type(self).__name__)
+        self.logger.setLevel(self.config.logging.loglevel)
+        logfilepath = os.path.join(self.gympath.log_folder,"{}.log".format(type(self).__name__))
+        self.config.logging.addRotatingFileHandler(self.logger, logfilepath)
         qh = logging.handlers.QueueHandler(self.logging_q)
-        self.logger = logging.getLogger(self.name)
-        self.logger.setLevel(logging.DEBUG)
+        qh.setLevel(logging.INFO)
         self.logger.addHandler(qh)
-        self.logger.info("started and initialized logger")       
+        self.logger.info("started and initialized logger")
 
         # ressources shared among threads:
         self.mcts_request_q = NamedQueue("mcts_request_q")
@@ -127,7 +123,7 @@ class Selfplayer(multiprocessing.Process):
                 thread_prediction_lock,
                 self.predict_request_q,
                 thread_predict_response_q,
-                self.logging_q,
+                self.logger,
                 self.debug_stats))            
             thread.start()
             while thread.native_id is None: # wait until thread has started
@@ -143,7 +139,7 @@ class Selfplayer(multiprocessing.Process):
         while not self.endevent.is_set():
             newrecords = self._selfplay()
             self.recordpool.append(newrecords)
-            self.logger.info("appended {} new records to game record pool".format(len(newrecords)))
+            self.logger.debug("appended {} new records to game record pool".format(len(newrecords)))
            
 
         self.terminateevent.set()
@@ -154,7 +150,7 @@ class Selfplayer(multiprocessing.Process):
                     self.thread_predict_response_qs[t.native_id].put([[] , 0.0])
                     self.thread_prediction_locks[t.native_id].release()
                 except RuntimeError:
-                    logging.warning("failed to release predict_lock for thread {}".format(t.native_id))
+                    self.logger.warning("failed to release predict_lock for thread {}".format(t.native_id))
                     pass
 
         self.logger.info("writing playrecords to file...")
@@ -165,16 +161,16 @@ class Selfplayer(multiprocessing.Process):
             if t.is_alive():
                 self.logger.warning("thread {} has not ended".format(t.name))
             else:
-                self.logger.info("thread {} has ended".format(t.name))
+                self.logger.debug("thread {} has ended".format(t.name))
         for q in queues:
             if not q.empty():
-                self.logger.info("{} items on queue {} - emptying".format(q.qsize(), q.name))
+                self.logger.debug("{} items on queue {} - emptying".format(q.qsize(), q.name))
                 while not q.empty():
                     q.get()
             if isinstance(q, mpq.Queue):
                 q.close()
                 q.join_thread()
-                self.logger.info("queue {} joined thread".format(q.name))
+                self.logger.debug("queue {} joined thread".format(q.name))
 
         self.logger.info("endevent received - terminating ({} workers still alive)".format(
             sum([int(t.is_alive()) for t in self.search_threads])))
@@ -217,7 +213,7 @@ class Selfplayer(multiprocessing.Process):
                 with self.mcts_graph_lock:
                     self._update(path)               
                 replies += 1
-        self.logger.info("MCTS finished {} searches, each thread spent on average {} sec waiting during select".format(
+        self.logger.debug("MCTS finished {} searches, each thread spent on average {} sec waiting during select".format(
             self.config.searchcount, 
             float(sum(self.debug_stats)/self.config.searchthreadcount) ))
         self.debug_stats.clear()
@@ -239,23 +235,20 @@ class Selfplayer(multiprocessing.Process):
 def _MCTSsearcher(
         graph : GameGraph, 
         searchtable : dict, 
-        config : SelfPlayConfig,
+        config : gymdata.SelfPlayConfig,
         terminateevent : threading.Event,
         request_q : queue.Queue, 
         response_q : queue.Queue, 
         graphlock : threading.Lock, 
         prediction_lock : threading.Lock, 
         predict_request_q : mpq.Queue, 
-        predict_response_q : mpq.Queue, 
-        logging_q : mpq.Queue,
+        predict_response_q : mpq.Queue,
+        parentlogger: logging.Logger,
         debug_stats : list):       
-    # setup logging
+    # logging setup
     thread_id = threading.get_ident()
-    qh = logging.handlers.QueueHandler(logging_q)
-    logger = logging.getLogger("Thread-{}".format(thread_id))
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(qh)
-    logger.info("MCTSsearcher started")
+    logger = parentlogger.getChild("Thread-{}".format(thread_id))
+    logger.debug("started and initialized logger")
 
     def predictor(vertex):
         prediction_lock.acquire()
@@ -263,11 +256,11 @@ def _MCTSsearcher(
         # waiting for predictor_proc to release the lock
         # alternative: check against lock.locked() ?
         with prediction_lock: 
-            # logger.debug("acquired prediction lock, reading from queue...")
+            logger.debug("acquired prediction lock, reading from queue...")
             return predict_response_q.get()                 
 
     def select(vertex):
-        # logger.info("select({})".format(vertex))
+        logger.debug("select({})".format(vertex))
         if graph.open_at(vertex) or graph.terminal_at(vertex):
             return [vertex]
         t0 = time()
@@ -294,7 +287,7 @@ def _MCTSsearcher(
         return [vertex] + select(min(graph.children_at(vertex), key=U))
 
     def expand(vertex):
-        # logger.info("expand({})".format(vertex))
+        # logger.debug("expand({})".format(vertex))
         if graph.open_at(vertex):     
             # block all other threads until graph has been expanded           
             with graphlock: 
@@ -329,4 +322,4 @@ def _MCTSsearcher(
             response_q.put(path)
         except queue.Empty:
             pass
-    logger.info("terminate event received - terminating")
+    logger.debug("terminate event received - terminating")

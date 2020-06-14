@@ -3,43 +3,36 @@ import logging.handlers
 import multiprocessing
 import multiprocessing.queues as mpq
 import os
-
 from time import sleep
-from dataclasses import dataclass
 
 import numpy as np
 
-
-@dataclass
-class TrainConfig():    
-    batchsize: int
-    epochs: int
-
+import gymdata
 
 class Trainer(multiprocessing.Process):
     def __init__(self, 
-    config : TrainConfig,    
+    config: gymdata.TrainConfig,
+    gympath: gymdata.GymPath,  
     endevent : multiprocessing.Event, 
     newmodelevent : multiprocessing.Event, 
-    logging_q : mpq.Queue,
-    modelpath : str, 
-    weightsfolder_path : str,
-    gamerecordpool_path : str):
+    logging_q : mpq.Queue):
         super().__init__()
-        self.modelpath = modelpath
-        self.weightsfolder_path = weightsfolder_path
-        self.gamerecordpool_path = gamerecordpool_path
         self.config = config
         self.endevent = endevent
         self.newmodelevent = newmodelevent
         self.logging_q = logging_q
+        self.gympath = gympath
         self.logger : logging.Logger
        
     
     def run(self):
+        # logging setup
+        self.logger = logging.getLogger(type(self).__name__)
+        self.logger.setLevel(self.config.logging.loglevel)
+        logfilepath = os.path.join(self.gympath.log_folder,"{}.log".format(type(self).__name__))
+        self.config.logging.addRotatingFileHandler(self.logger, logfilepath)
         qh = logging.handlers.QueueHandler(self.logging_q)
-        self.logger = logging.getLogger(self.name)
-        self.logger.setLevel(logging.DEBUG)
+        qh.setLevel(logging.INFO)
         self.logger.addHandler(qh)
         self.logger.info("started and initialized logger")
 
@@ -56,18 +49,20 @@ class Trainer(multiprocessing.Process):
             dot_every: How many epochs between dots.
             """
 
-            def __init__(self, report_every=100, dot_every=1):
+            def __init__(self,  logger:logging.Logger, report_every=100, dot_every=1,):
                 self.report_every = report_every
                 self.dot_every = dot_every
+                self.logger = logger
 
             def on_epoch_end(self, epoch, logs):
                 if epoch % self.report_every == 0:
                     print()
-                    print('Epoch: {:d}, train loss: {:0.5f} (pi {:0.5f}, v {:0.5f})'
-                        .format(epoch,
+                    msg = 'Epoch: {:d}, train loss: {:0.5f} (pi {:0.5f}, v {:0.5f})'.format(epoch,
                                 logs['loss'],
                                 logs['pi_loss'],
-                                logs['v_loss'],), end='')
+                                logs['v_loss'],)
+                    print(msg, end='')
+                    self.logger.info(msg)
                     # print(', val loss: {:0.5f} (pi {:0.5f}, v {:0.5f})'
                     #     .format(logs['val_loss'],
                     #             logs['val_pi_loss'],
@@ -78,7 +73,7 @@ class Trainer(multiprocessing.Process):
 
         def load_dataset() -> tf.data.Dataset:
             try:
-                gamerecordfolders = [f.path for f in os.scandir(self.gamerecordpool_path) if f.is_dir() ]
+                gamerecordfolders = [f.path for f in os.scandir(self.gympath.gamerecordpool_folder) if f.is_dir() ]
                 folder = gamerecordfolders[-1]
                 x = np.loadtxt(os.path.join(folder, '0.x.csv'), delimiter=',')
                 y_pi = np.loadtxt(os.path.join(folder, '0.y_pi.csv'), delimiter=',')
@@ -99,8 +94,8 @@ class Trainer(multiprocessing.Process):
         self.logger.info("available logical gpus: {}".format( logical_gpus))      
         self.logger.info("using: {}".format(logical_gpus[0].name))        
         with tf.device(logical_gpus[0].name):
-            MODEL = tf.keras.models.load_model(self.modelpath)    
-            self.logger.info("tf.keras.model loaded from {}".format(self.modelpath))
+            MODEL = tf.keras.models.load_model(self.gympath.currentmodel_folder)    
+            self.logger.info("tf.keras.model loaded from {}".format(self.gympath.currentmodel_folder))
             while not self.endevent.is_set(): 
                 dataset = load_dataset()
                 if isinstance(dataset, Exception):
@@ -112,7 +107,8 @@ class Trainer(multiprocessing.Process):
                     trainresult = MODEL.fit(dataset,
                                      steps_per_epoch=10,
                                      epochs=1000,
-                                     callbacks=EpochDots(report_every=500, dot_every=10),
+                                     callbacks=EpochDots(logger=self.logger,
+                                         report_every=500, dot_every=10),
                                      verbose=0)
         
         self.logger.info("endevent received - terminating")
