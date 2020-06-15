@@ -1,3 +1,6 @@
+# THIS BRANCH IS IT WORK IN PROGRESS - README IS OUTDATED/INCORRECT
+-> check thefile *script-trialrun.py* instead
+
 # santorini
 This repo started when I was tinkering with a simple AI for Santorini (https://en.wikipedia.org/wiki/Santorini_(game)). It is heavily inspired by the success of AlphaZero. Although the guiding example is santorini, the methods are devlopped in a way that allows a plug-n-play adaption to other games: For any game, create the corresponding abstracted graph version by overriding `gamesearch.GameGraph`. This is the main ingredient for the methods provided in `gamesearch.py` and `alphagym.py`.
 
