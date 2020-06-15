@@ -18,43 +18,6 @@ import gymdata
 from namedqueues import NamedQueue
 from gamegraph import GameGraph
 
-class GameRecordPool():
-    def __init__(self, graph : GameGraph, gamerecordpool_path : str):
-        self.graph = graph
-        self._records = deque([])
-        self.currentBatchNr = 0
-        self.folderpath = "{}/{}".format(gamerecordpool_path,"active")
-        # self.folderpath = "{}/{}".format(gamerecordpool_path, datetime.now().strftime("%Y-%m-%d %H_%M_%S"))
-        self.batchSize = 50
-        if not os.path.exists(self.folderpath):
-            os.makedirs(self.folderpath)
-
-    def append(self, newrecords):
-        for r in newrecords:
-            self._records.append(r)
-        while len(self._records) > self.batchSize:
-            self._dump_batch()
-
-    def _dump_batch(self, count=None):
-        if count == None:
-            count = self.batchSize
-        x, val_vec, pi_vec = [], [], []
-        log =  [self._records.popleft() for _ in range(min(len(self._records), count))]
-        for turndata in log:
-            pi = turndata[1]
-            if pi is not None:
-                x += [self.graph.numpify(turndata[0])]
-                val_vec += [float(turndata[2])]
-                # regularize dimension of pi and normalize to a proper probability
-                pi = [p/sum(pi) for p in pi]
-                for _ in range(len(pi), self.graph.outdegree_max):
-                    pi.append(0)
-                pi_vec += [pi]
-        np.savetxt(os.path.join(self.folderpath, '{}.x.csv'.format(self.currentBatchNr)), np.array(x), delimiter=',')
-        np.savetxt(os.path.join(self.folderpath, '{}.y_val.csv'.format(self.currentBatchNr)), np.array(val_vec), delimiter=',')
-        np.savetxt(os.path.join(self.folderpath, '{}.y_pi.csv'.format(self.currentBatchNr)), np.array(pi_vec), delimiter=',')
-        self.currentBatchNr += 1
-
 class Selfplayer(multiprocessing.Process):
     def __init__(self,
             config : gymdata.SelfPlayConfig, 
@@ -73,11 +36,10 @@ class Selfplayer(multiprocessing.Process):
         self.logging_q = logging_q
         self.predict_request_q = predict_request_q
         self.predict_response_q = predict_response_q
-        self.recordpool = GameRecordPool(graph=graph, 
-                    gamerecordpool_path=gympath.gamerecordpool_folder)
         self.gympath = gympath
         self.logger : logging.Logger
         self.debug_stats = []
+        self._records = deque([])
 
     @property
     def mcts_graph(self):
@@ -92,9 +54,10 @@ class Selfplayer(multiprocessing.Process):
         self.logger = logging.getLogger(type(self).__name__)
         self.logger.setLevel(self.config.logging.loglevel)
         logfilepath = os.path.join(self.gympath.log_folder,"{}.log".format(type(self).__name__))
-        self.config.logging.addRotatingFileHandler(self.logger, logfilepath)
+        rfh = self.config.logging.getRotatingFileHandler(logfilepath)
         qh = logging.handlers.QueueHandler(self.logging_q)
         qh.setLevel(logging.INFO)
+        self.logger.addHandler(rfh)
         self.logger.addHandler(qh)
         self.logger.info("started and initialized logger")
 
@@ -138,7 +101,7 @@ class Selfplayer(multiprocessing.Process):
 
         while not self.endevent.is_set():
             newrecords = self._selfplay()
-            self.recordpool.append(newrecords)
+            self.append_records(newrecords)
             self.logger.debug("appended {} new records to game record pool".format(len(newrecords)))
            
 
@@ -154,6 +117,7 @@ class Selfplayer(multiprocessing.Process):
                     pass
 
         self.logger.info("writing playrecords to file...")
+        # raise NotImplementedError #TODO - dump files? temp file to pick up next time?
         self.logger.info("...done")
         
         for t in self.search_threads:
@@ -231,6 +195,38 @@ class Selfplayer(multiprocessing.Process):
             self.mcts_searchtable[path[i]]['VL'] = 0
         return
 
+    def append_records(self, newrecords):
+        for r in newrecords:
+            self._records.append(r)
+        while len(self._records) >= self.config.record_minbatchsize:
+            self._dump_batch()
+
+    def _dump_batch(self, count=None):
+        modeliteration: int
+        with open(self.gympath.currentmodelinfo_file, 'r') as f:
+            modeliteration = gymdata.ModelInfo.from_json(f.read()).iterationNr 
+        folderpath = "{}/{}".format(self.gympath.gamerecordpool_folder, modeliteration)
+        if not os.path.exists(folderpath):
+            os.makedirs(folderpath)
+
+        if count == None:
+            count = self.config.record_minbatchsize
+        x, val_vec, pi_vec = [], [], []
+        log =  [self._records.popleft() for _ in range(min(len(self._records), count))]
+        for turndata in log:
+            pi = turndata[1]
+            if pi is not None:
+                x += [self.mcts_graph.numpify(turndata[0])]
+                val_vec += [float(turndata[2])]
+                # regularize dimension of pi and normalize to a proper probability
+                pi = [p/sum(pi) for p in pi]
+                for _ in range(len(pi), self.mcts_graph.outdegree_max):
+                    pi.append(0)
+                pi_vec += [pi]
+        prefix = "{}[{}]".format(datetime.now().strftime("%Y-%m-%dT%H_%M_%S"), self.pid)
+        np.savetxt(os.path.join(folderpath, '{}.x.csv'.format(prefix)), np.array(x), delimiter=',')
+        np.savetxt(os.path.join(folderpath, '{}.y_val.csv'.format(prefix)), np.array(val_vec), delimiter=',')
+        np.savetxt(os.path.join(folderpath, '{}.y_pi.csv'.format(prefix)), np.array(pi_vec), delimiter=',')
 
 def _MCTSsearcher(
         graph : GameGraph, 

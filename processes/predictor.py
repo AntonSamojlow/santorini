@@ -33,34 +33,48 @@ class Predictor(multiprocessing.Process):
         self.logger = logging.getLogger(type(self).__name__)
         self.logger.setLevel(self.config.logging.loglevel)
         logfilepath = os.path.join(self.gympath.log_folder,"{}.log".format(type(self).__name__))
-        self.config.logging.addRotatingFileHandler(self.logger, logfilepath)
+        rfh = self.config.logging.getRotatingFileHandler(logfilepath)
         qh = logging.handlers.QueueHandler(self.logging_q)
         qh.setLevel(logging.INFO)
+        self.logger.addHandler(rfh)
         self.logger.addHandler(qh)
         self.logger.info("started and initialized logger")
        
         import tensorflow as tf        
         self.logger.info('imported TensorFlow {0}'.format(tf.__git_version__))
         tflogger = tf.get_logger()
-        tflogger.addHandler(qh)
-        tflogger.setLevel(logging.INFO)   
-     
-        tf.config.experimental.set_virtual_device_configuration(
-            tf.config.experimental.list_physical_devices('GPU')[0],
-            [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=2048)])
+        tflogger.addHandler(rfh)
+        tflogger.setLevel(logging.WARNING)   
 
-        logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-        self.logger.info("available logical gpus: {}".format( logical_gpus))      
-        self.logger.info("using: {}".format(logical_gpus[0].name))
-        with tf.device(logical_gpus[0].name):
-        # with tf.device("/cpu:0"):
+        tf_device = "/cpu:0"
+        if self.config.use_gpu:
+            if self.config.gpu_memorylimit == None:
+                tf_device = "/gpu:0"
+            else:
+                self.logger.debug("creating new logical gpu with {}MB memory".format(self.config.gpu_memorylimit))
+                tf.config.experimental.set_virtual_device_configuration(
+                    tf.config.experimental.list_physical_devices('GPU')[0],
+                    [tf.config.experimental.VirtualDeviceConfiguration(
+                        memory_limit=self.config.gpu_memorylimit)])
+                logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+                self.logger.debug("available logical gpus: {}".format( logical_gpus))      
+                tf_device = logical_gpus[0].name
+        
+        MODEL: tf.keras.Model 
+        self.logger.info("using: {}".format(tf_device))
+        with tf.device(tf_device): 
             MODEL = tf.keras.models.load_model(self.gympath.currentmodel_folder)    
-            self.logger.info("tf.keras.model loaded from {}, waiting for requests...".format(self.gympath.currentmodel_folder))
+            model_iteration: int
+            with open(self.gympath.currentmodelinfo_file, 'r') as f:
+                model_iteration = gymdata.ModelInfo.from_json(f.read()).iterationNr 
+            self.logger.info("tf.keras.model (iteration {}) loaded from {}, awaiting for requests...".format(model_iteration, self.gympath.currentmodel_folder))
             while not self.endevent.is_set():
                 if self.newmodelevent.is_set():
-                    MODEL = tf.keras.models.load_model(self.gympath.currentmodel_folder)    
+                    MODEL = tf.keras.models.load_model(self.gympath.currentmodel_folder)   
+                    with open(self.gympath.currentmodelinfo_file) as f:
+                        model_iteration = gymdata.ModelInfo.from_json(f.read()).iterationNr  
                     self.newmodelevent.clear()
-                    self.logger.info("tf.keras.model reloaded from {}".format(self.gympath.currentmodel_folder))
+                    self.logger.info("tf.keras.model (iteration {}) reloaded from {}".format(model_iteration, self.gympath.currentmodel_folder))
              
                 requests = []
                 try:

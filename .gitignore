@@ -11,5 +11,4 @@ script_*
 *.json
 *.drawio
 *.session
-data
-models
+benchmarkresults

@@ -44,11 +44,16 @@ class GameGym():
             self.config = gym_config
         
         logfilepath = os.path.join(self.path.log_folder,"{}.log".format(type(self).__name__))
-        gym_config.logging.addRotatingFileHandler(LOGGER, logfilepath)
+        LOGGER.addHandler(gym_config.logging.getRotatingFileHandler(logfilepath))
 
         if not intialmodelpath is None:            
             copy_tree(intialmodelpath, self.path.currentmodel_folder)
             LOGGER.debug("copied initial model from '{}' to '{}'".format(intialmodelpath, self.path.currentmodel_folder))
+            with open(self.path.currentmodelinfo_file, 'w+') as f:
+                f.write(gymdata.ModelInfo(0).as_json(indent=0))
+                LOGGER.debug("created new model info file (iteration count = 0)")
+            
+                        
   
     @property
     def path(self):
