@@ -1,7 +1,12 @@
 import logging
 import json
+import enum
 from dataclasses import dataclass
 
+class MonitoringLabel(enum.Enum):
+    LIVESIGNAL = enum.auto()
+    SELFPLAYSTATS = enum.auto()
+    
 
 @dataclass
 class LoggingConfig():  
@@ -26,21 +31,25 @@ class PredictConfig():
 
 @dataclass
 class SelfPlayConfig():
+    selfplayprocesses :  int
     searchthreadcount : int
     searchcount : int
     exploration_const: float = 2.0 
     virtualloss: float = 0.1
     sleeptime_blocked_select: float = 0.1
     temperature: float = 1.0
-    record_minbatchsize = 100
+    record_dumpbatchsize: int = 100
+    freq_statssignal: int = 60
     logging: LoggingConfig = LoggingConfig()
     
 @dataclass
 class TrainConfig():
     epochs: int    
     batchsize: int
-    maxsamplecount: int
-    maxsampleage: int = 3
+    min_samplecount: int
+    max_samplecount: int
+    max_sampleage: int = 3
+    validation_split: float = 0.2
     logging: LoggingConfig = LoggingConfig()
     use_gpu: bool = False
     gpu_memorylimit: int = None
@@ -50,6 +59,7 @@ class GymConfig():
     predict: PredictConfig
     selfplay: SelfPlayConfig 
     train: TrainConfig
+    freq_livesignal: int = 60
     logging: LoggingConfig = LoggingConfig()
 
 @dataclass
@@ -60,14 +70,17 @@ class GymPath():
     def config_file(self) ->str:
         return "{}/config.json".format(self.basefolder)  
     @property
-    def currentmodelinfo_file(self) ->str:
-        return "{}/currentmodel/info.json".format(self.basefolder)
+    def modelinfo_file(self) ->str:
+        return "{}/model/info.json".format(self.basefolder)
     @property
-    def currentmodel_folder(self) ->str:
-        return "{}/currentmodel/".format(self.basefolder)
+    def model_folder(self) ->str:
+        return "{}/model/".format(self.basefolder)
     @property
     def weights_folder(self) ->str:
         return "{}/weights/".format(self.basefolder)
+    @property
+    def trainhistories_folder(self) ->str:
+        return "{}/trainhistories/".format(self.basefolder)
     @property
     def gamerecordpool_folder(self) ->str:
         return "{}/gamerecordpool/".format(self.basefolder)
@@ -75,9 +88,18 @@ class GymPath():
     def log_folder(self) ->str:
         return "{}/logs/".format(self.basefolder)
     @property
+    def monitoring_folder(self) ->str:
+        return "{}/monitoring/".format(self.basefolder)
+
+    @property
     def subfolders(self) -> list:
-        return [self.currentmodel_folder, self.gamerecordpool_folder, 
-        self.log_folder, self.weights_folder]
+        return [
+            self.model_folder, 
+            self.gamerecordpool_folder, 
+            self.log_folder, 
+            self.weights_folder, 
+            self.trainhistories_folder,
+            self.monitoring_folder]
 
 @dataclass
 class ModelInfo():

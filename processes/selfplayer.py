@@ -20,15 +20,18 @@ from gamegraph import GameGraph
 
 class Selfplayer(multiprocessing.Process):
     def __init__(self,
-            config : gymdata.SelfPlayConfig, 
+            name: str,
+            config: gymdata.SelfPlayConfig, 
             gympath: gymdata.GymPath,
-            endevent : multiprocessing.Event,          
-            logging_q : mpq.Queue,            
-            predict_request_q : mpq.Queue, 
-            predict_response_q : mpq.Queue,
-            graph : GameGraph):
+            monitoring_q: mpq.Queue,
+            endevent: multiprocessing.Event,          
+            logging_q: mpq.Queue,            
+            predict_request_q: mpq.Queue, 
+            predict_response_q: mpq.Queue,
+            graph: GameGraph):
         super().__init__()
         graph.truncate_to_roots()
+        self.name = name
         self._mcts_graph = graph.copy()
         self._mcts_searchtable = {}
         self.config = config
@@ -37,9 +40,11 @@ class Selfplayer(multiprocessing.Process):
         self.predict_request_q = predict_request_q
         self.predict_response_q = predict_response_q
         self.gympath = gympath
+        self.monitoring_q = monitoring_q
         self.logger : logging.Logger
-        self.debug_stats = []
+        self.debug_stats = {'select_wait':[], 'predict_wait':[]}
         self._records = deque([])
+
 
     @property
     def mcts_graph(self):
@@ -51,9 +56,9 @@ class Selfplayer(multiprocessing.Process):
 
     def run(self):
        # logging setup
-        self.logger = logging.getLogger(type(self).__name__)
-        self.logger.setLevel(self.config.logging.loglevel)
-        logfilepath = os.path.join(self.gympath.log_folder,"{}.log".format(type(self).__name__))
+        self.logger = logging.getLogger(self.name)
+        self.logger.setLevel(self.config.logging.loglevel)        
+        logfilepath = os.path.join(self.gympath.log_folder,"{}[{}].log".format(type(self).__name__, self.pid))
         rfh = self.config.logging.getRotatingFileHandler(logfilepath)
         qh = logging.handlers.QueueHandler(self.logging_q)
         qh.setLevel(logging.INFO)
@@ -61,84 +66,114 @@ class Selfplayer(multiprocessing.Process):
         self.logger.addHandler(qh)
         self.logger.info("started and initialized logger")
 
-        # ressources shared among threads:
-        self.mcts_request_q = NamedQueue("mcts_request_q")
-        self.mcts_response_q = NamedQueue("mcts_response_q")
-        self.mcts_graph_lock = threading.Lock()
-        self.terminateevent = threading.Event()
-        queues = [self.mcts_request_q, self.mcts_response_q]    
+        try:
 
-        # search threads: assign their ressources and start
-        self.search_threads = [] 
-        self.thread_prediction_locks = {}   
-        self.thread_predict_response_qs = {}   
-        for _ in range(self.config.searchthreadcount):
-            thread_prediction_lock = threading.Lock()
-            thread_predict_response_q = NamedQueue("")
-            thread = threading.Thread(target=_MCTSsearcher,
-                args=(self.mcts_graph, 
-                self.mcts_searchtable, 
-                self.config,
-                self.terminateevent,
-                self.mcts_request_q,
-                self.mcts_response_q,
-                self.mcts_graph_lock,
-                thread_prediction_lock,
-                self.predict_request_q,
-                thread_predict_response_q,
-                self.logger,
-                self.debug_stats))            
-            thread.start()
-            while thread.native_id is None: # wait until thread has started
-                sleep(0.1)
-                pass
-            self.search_threads += [thread]
-            self.thread_prediction_locks[thread.native_id] = thread_prediction_lock
-            thread_predict_response_q.name = "[{}]_predict_response_q".format(thread.native_id)
-            self.thread_predict_response_qs[thread.native_id] = thread_predict_response_q    
-        
-        queues += list(self.thread_predict_response_qs.values())
+            # ressources shared among threads:
+            self.mcts_request_q = NamedQueue("mcts_request_q")
+            self.mcts_response_q = NamedQueue("mcts_response_q")
+            self.mcts_graph_lock = threading.Lock()
+            self.terminateevent = threading.Event()
+            queues = [self.mcts_request_q, self.mcts_response_q]    
 
-        while not self.endevent.is_set():
-            newrecords = self._selfplay()
-            self.append_records(newrecords)
-            self.logger.debug("appended {} new records to game record pool".format(len(newrecords)))
-           
-
-        self.terminateevent.set()
-        # unlock threads still waiting for predictions and insert fake prediction 
-        for t in self.search_threads:
-            if t.is_alive() and self.thread_prediction_locks[t.native_id].locked():               
-                try:
-                    self.thread_predict_response_qs[t.native_id].put([[] , 0.0])
-                    self.thread_prediction_locks[t.native_id].release()
-                except RuntimeError:
-                    self.logger.warning("failed to release predict_lock for thread {}".format(t.native_id))
+            # search threads: assign their ressources and start
+            self.search_threads = [] 
+            self.thread_prediction_locks = {}   
+            self.thread_predict_response_qs = {}   
+            for _ in range(self.config.searchthreadcount):
+                thread_prediction_lock = threading.Lock()
+                thread_predict_response_q = NamedQueue("")
+                thread = threading.Thread(target=_MCTSsearcher,
+                    args=(self.mcts_graph, 
+                    self.mcts_searchtable, 
+                    self.config,
+                    self.terminateevent,
+                    self.mcts_request_q,
+                    self.mcts_response_q,
+                    self.mcts_graph_lock,
+                    thread_prediction_lock,
+                    self.predict_request_q,
+                    thread_predict_response_q,
+                    self.logger,
+                    self.name,
+                    self.debug_stats))            
+                thread.start()
+                while thread.native_id is None: # wait until thread has started
+                    sleep(0.1)
                     pass
+                self.search_threads += [thread]
+                self.thread_prediction_locks[thread.native_id] = thread_prediction_lock
+                thread_predict_response_q.name = "[{}]_predict_response_q".format(thread.native_id)
+                self.thread_predict_response_qs[thread.native_id] = thread_predict_response_q    
+            
+            queues += list(self.thread_predict_response_qs.values())
 
-        self.logger.info("writing playrecords to file...")
-        # raise NotImplementedError #TODO - dump files? temp file to pick up next time?
-        self.logger.info("...done")
+            t0_statssignal = 0
+            gamecount=0
+            while not self.endevent.is_set():
+                if time()-t0_statssignal > self.config.freq_statssignal:
+                    t0_statssignal = time()
+                    stats = {
+                        'recordcount': len(self._records),
+                        'gamecount': gamecount,
+                        'select_wait_sum':  sum(self.debug_stats['select_wait']),
+                        'select_wait_count': len(self.debug_stats['select_wait']),
+                        'predict_wait_sum':  sum(self.debug_stats['predict_wait']),
+                        'predict_wait_count': len(self.debug_stats['predict_wait'])
+                        }
+                    data = (
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        f"{__name__}[{self.pid}]",
+                        gymdata.MonitoringLabel.SELFPLAYSTATS,
+                        stats)
+                    self.monitoring_q.put(data)
+                    self.debug_stats['predict_wait'].clear()
+                    self.debug_stats['select_wait'].clear()
+
+                newrecords = self._selfplay()
+                self.append_records(newrecords)
+                self.logger.debug("appended {} new records to game record pool".format(len(newrecords)))
+                gamecount+=1
+            
+
+            self.terminateevent.set()
+            # unlock threads still waiting for predictions and insert fake prediction 
+            for t in self.search_threads:
+                if t.is_alive() and self.thread_prediction_locks[t.native_id].locked():               
+                    try:
+                        self.thread_predict_response_qs[t.native_id].put([[] , 0.0])
+                        self.thread_prediction_locks[t.native_id].release()
+                    except RuntimeError:
+                        self.logger.warning("failed to release predict_lock for thread {}".format(t.native_id))
+                        pass
+
+            self.logger.debug("writing playrecords to file...")
+            self._dump_records()
+            self.logger.debug("...done")
+            
+            for t in self.search_threads:
+                t.join(5)
+                if t.is_alive():
+                    self.logger.warning("thread {} has not ended".format(t.name))
+                else:
+                    self.logger.debug("thread {} has ended".format(t.name))
+            for q in queues:
+                if not q.empty():
+                    self.logger.debug("{} items on queue {} - emptying".format(q.qsize(), q.name))
+                    while not q.empty():
+                        q.get()
+                if isinstance(q, mpq.Queue):
+                    q.close()
+                    q.join_thread()
+                    self.logger.debug("queue {} joined thread".format(q.name))
+
+            self.logger.info("endevent received - terminating ({} workers still alive)".format(
+                sum([int(t.is_alive()) for t in self.search_threads])))
         
-        for t in self.search_threads:
-            t.join(5)
-            if t.is_alive():
-                self.logger.warning("thread {} has not ended".format(t.name))
-            else:
-                self.logger.debug("thread {} has ended".format(t.name))
-        for q in queues:
-            if not q.empty():
-                self.logger.debug("{} items on queue {} - emptying".format(q.qsize(), q.name))
-                while not q.empty():
-                    q.get()
-            if isinstance(q, mpq.Queue):
-                q.close()
-                q.join_thread()
-                self.logger.debug("queue {} joined thread".format(q.name))
-
-        self.logger.info("endevent received - terminating ({} workers still alive)".format(
-            sum([int(t.is_alive()) for t in self.search_threads])))
-
+        except Exception as exc :
+            self.logger.error("exception: {}".format(exc))
+            self.logger.info("signaling endevent and terminating")
+            self.endevent.set()
+                
 
     def _selfplay(self) -> list:
         self.mcts_graph.truncate_to_roots()
@@ -177,10 +212,7 @@ class Selfplayer(multiprocessing.Process):
                 with self.mcts_graph_lock:
                     self._update(path)               
                 replies += 1
-        self.logger.debug("MCTS finished {} searches, each thread spent on average {} sec waiting during select".format(
-            self.config.searchcount, 
-            float(sum(self.debug_stats)/self.config.searchthreadcount) ))
-        self.debug_stats.clear()
+        self.logger.debug(f"MCTS finished {self.config.searchcount} searches")
         return
 
     def _update(self, path):
@@ -198,24 +230,33 @@ class Selfplayer(multiprocessing.Process):
     def append_records(self, newrecords):
         for r in newrecords:
             self._records.append(r)
-        while len(self._records) >= self.config.record_minbatchsize:
-            self._dump_batch()
+        while len(self._records) >= self.config.record_dumpbatchsize:
+            self._dump_records(batchsize=self.config.record_dumpbatchsize)
 
-    def _dump_batch(self, count=None):
+    def _dump_records(self, batchsize=None):
+        if len(self._records) < 2:
+            self.logger.warning("nothing to dump - records list has one or no elements")
+            return
         modeliteration: int
-        with open(self.gympath.currentmodelinfo_file, 'r') as f:
+        with open(self.gympath.modelinfo_file, 'r') as f:
             modeliteration = gymdata.ModelInfo.from_json(f.read()).iterationNr 
         folderpath = "{}/{}".format(self.gympath.gamerecordpool_folder, modeliteration)
-        if not os.path.exists(folderpath):
-            os.makedirs(folderpath)
+        try:
+            if not os.path.exists(folderpath):
+                os.makedirs(folderpath)
+        except FileExistsError: #due to several simultaneous processes accessing 
+            pass
 
-        if count == None:
-            count = self.config.record_minbatchsize
+        if batchsize == None:
+            batchsize = len(self._records)
+        else:
+            batchsize = min(len(self._records), batchsize)        
+
+        records_to_dump =  [self._records.popleft() for _ in range(batchsize)]
         x, val_vec, pi_vec = [], [], []
-        log =  [self._records.popleft() for _ in range(min(len(self._records), count))]
-        for turndata in log:
+        for turndata in records_to_dump:
             pi = turndata[1]
-            if pi is not None:
+            if pi is not None: # filter out terminal states
                 x += [self.mcts_graph.numpify(turndata[0])]
                 val_vec += [float(turndata[2])]
                 # regularize dimension of pi and normalize to a proper probability
@@ -240,6 +281,7 @@ def _MCTSsearcher(
         predict_request_q : mpq.Queue, 
         predict_response_q : mpq.Queue,
         parentlogger: logging.Logger,
+        selfplayername: str,
         debug_stats : list):       
     # logging setup
     thread_id = threading.get_ident()
@@ -248,7 +290,7 @@ def _MCTSsearcher(
 
     def predictor(vertex):
         prediction_lock.acquire()
-        predict_request_q.put((thread_id, graph.numpify(vertex)))
+        predict_request_q.put((selfplayername, thread_id, graph.numpify(vertex)))
         # waiting for predictor_proc to release the lock
         # alternative: check against lock.locked() ?
         with prediction_lock: 
@@ -262,7 +304,7 @@ def _MCTSsearcher(
         t0 = time()
         while vertex not in searchtable:
             sleep(config.sleeptime_blocked_select)                
-        debug_stats.append(time()-t0)
+        debug_stats['select_wait'].append(time()-t0)
 
         # check event here since another blocking thread may have been given 'fake' predictions
         if terminateevent.is_set():
@@ -300,7 +342,9 @@ def _MCTSsearcher(
                     'P': [],
                     'VL': 0}
             else:
+                t0 = time()
                 prediction = predictor(vertex)
+                debug_stats['predict_wait'].append(time()-t0)
                 tableentry = {
                         'N': [0 for c in graph.children_at(vertex)],
                         'Q': prediction[1],

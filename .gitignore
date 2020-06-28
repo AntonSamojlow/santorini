@@ -10,5 +10,5 @@ script_*
 *.log
 *.json
 *.drawio
-*.session
+*.session*
 benchmarkresults

@@ -4,6 +4,7 @@ import multiprocessing
 import multiprocessing.queues as mpq
 import threading
 import os
+import datetime
 from time import time, sleep
 from distutils.dir_util import copy_tree
 
@@ -47,9 +48,9 @@ class GameGym():
         LOGGER.addHandler(gym_config.logging.getRotatingFileHandler(logfilepath))
 
         if not intialmodelpath is None:            
-            copy_tree(intialmodelpath, self.path.currentmodel_folder)
-            LOGGER.debug("copied initial model from '{}' to '{}'".format(intialmodelpath, self.path.currentmodel_folder))
-            with open(self.path.currentmodelinfo_file, 'w+') as f:
+            copy_tree(intialmodelpath, self.path.model_folder)
+            LOGGER.debug("copied initial model from '{}' to '{}'".format(intialmodelpath, self.path.model_folder))
+            with open(self.path.modelinfo_file, 'w+') as f:
                 f.write(gymdata.ModelInfo(0).as_json(indent=0))
                 LOGGER.debug("created new model info file (iteration count = 0)")
             
@@ -60,117 +61,194 @@ class GameGym():
         return self._path
 
     def resume(self):
-        # ----------------------------------------------------------------------
-        # 1. Start - initialize ressources
-        # ----------------------------------------------------------------------       
-        
-        # events         
-        endevent = multiprocessing.Event()
-        newmodelevent = multiprocessing.Event()
-        events = [endevent, newmodelevent]
-        
-        # queues
-        logging_q = NamedMultiProcessingQueue("logging_q")
-        predict_request_q = NamedMultiProcessingQueue("predict_request_q")
-        predict_response_q = NamedMultiProcessingQueue("predict_response_q")
-        queues = [logging_q, predict_request_q, predict_response_q]
-        
-        # start threads
-        loggingthread = threading.Thread(
-            target=self.__class__._distributed_logger,
-            args=(logging_q,), 
-            name="logging_thread")
-        keyboard_listener_thread= threading.Thread(
-            target=self._keyboard_listener,
-            args=(endevent,),
-            name="keyboard_reader")     
-        threads = [loggingthread, keyboard_listener_thread]
-        
-        # processes   
-        trainer_proc = Trainer(
-                self.config.train,
-                self.path,
-                endevent, 
-                newmodelevent,
-                logging_q)
+        try:
+            # ----------------------------------------------------------------------
+            # 1. Start - initialize ressources
+            # ----------------------------------------------------------------------       
+            
+            # events         
+            endevent = multiprocessing.Event()
+            newmodelevent = multiprocessing.Event()
+            events = [endevent, newmodelevent]
+            
+            # queues
+            logging_q = NamedMultiProcessingQueue("logging_q")
+            predict_request_q = NamedMultiProcessingQueue("predict_request_q")
+            monitoring_q = NamedMultiProcessingQueue("monitoring_q")
+            predict_response_qs = { "Selfplayer-{}".format(i) : NamedMultiProcessingQueue("Selfplayer-{} predict_response_q".format(i))
+                for i in range(self.config.selfplay.selfplayprocesses)}
+            queues = [logging_q, predict_request_q, monitoring_q] + list(predict_response_qs.values())
+            
+            # threads - configuration and start
+            logging_thread = threading.Thread(
+                target=self.__class__._centrallogger,
+                args=(logging_q,), 
+                daemon=True, # note: also execpts 'TER' signal for a regular shutdown
+                name="logging")
+            inputreader_thread= threading.Thread(
+                target=self._inputreader,
+                daemon=True, # note: due to input() blocking, there is no end signaling for this thread
+                args=(endevent,),
+                name="inputreader")
+            monitoring_thread = threading.Thread(
+                target=self._monitoring,
+                daemon=True, # note: also execpts 'TER' signal for a regular shutdown
+                args =(monitoring_q,self.path),
+                name="monitoring"
+            )     
+            threads = [logging_thread, inputreader_thread, monitoring_thread]
+            
+            # processes - configuration
+            trainer_proc = Trainer(
+                    self.config.train,
+                    self.path,
+                    endevent, 
+                    newmodelevent,
+                    logging_q)
 
-        predictor_proc = Predictor(
-                self.config.predict,
-                self.path,
-                endevent,
-                newmodelevent,
-                logging_q,
-                predict_request_q,
-                predict_response_q)
+            predictor_proc = Predictor(
+                    self.config.predict,
+                    self.path,
+                    endevent,
+                    newmodelevent,
+                    logging_q,
+                    predict_request_q,
+                    predict_response_qs)
+            selfplayer_procs =[Selfplayer(
+                        selfplayername,
+                        self.config.selfplay,
+                        self.path,
+                        monitoring_q,
+                        endevent,
+                        logging_q,
+                        predict_request_q,
+                        predict_response_qs[selfplayername],
+                        self.graph)          
+                for selfplayername in predict_response_qs]
+            processes = [trainer_proc, predictor_proc] + selfplayer_procs
 
-        selfplayer_proc = Selfplayer(
-                self.config.selfplay,
-                self.path,
-                endevent,
-                logging_q,
-                predict_request_q,
-                predict_response_q,
-                self.graph)          
-        
-        processes = [trainer_proc, predictor_proc, selfplayer_proc]
+            # cleanup of defined ressources
+            def cleanup():
+                LOGGER.info("endevent was set - starting cleanup of ressources")
+                logging_q.put('TER')
+                monitoring_q.put('TER')
+                
+                for p in processes:
+                    p.join(10)          
+                    if p.is_alive():
+                        LOGGER.warning("process {} has not ended - using terminate command".format(p.name))
+                        p.terminate()                
+                    else:
+                        LOGGER.debug("process {} has ended".format(p.name))
+                
+                for t in threads:
+                    if t.isDaemon() and t.is_alive():
+                        LOGGER.debug("thread {} is deamonic and alive - skipping join".format(t.name))
+                    else:
+                        t.join(5)
+                        if t.is_alive():
+                            LOGGER.warning("thread {} has not ended".format(t.name))
+                        else:
+                            LOGGER.debug("thread {} has ended".format(t.name))
 
-        # ----------------------------------------------------------------------
-        # 2. Run - start threads, process and handle until endevent
-        # ----------------------------------------------------------------------
-        # start threads
-        for t in threads:
-            t.start()
-        while not loggingthread.is_alive():
-            sleep(0.1)
-        LOGGER.info("loggingthread alive")    
+                for q in queues:
+                    if not q.empty():
+                        LOGGER.debug("{} items on queue {} - emptying".format(q.qsize(), q.name))
+                        while not q.empty():
+                            q.get()
+                    if isinstance(q, mpq.Queue):
+                        q.close()
+                        q.join_thread()            
+                        LOGGER.debug("queue {} joined".format(q.name))
+                LOGGER.info("cleanup finished, process ending")
+            
+            # ----------------------------------------------------------------------
+            # 2. Run - start threads, process and handle until endevent
+            # ----------------------------------------------------------------------
+            # start threads
+            LOGGER.debug("starting threads")
+            for t in threads:
+                LOGGER.debug("starting {} ...".format(t.name))
+                t.start()
+                while not t.is_alive():
+                    sleep(0.1)
+                LOGGER.debug("{} is alive".format(t.name))
 
-        # start processes
-        for p in processes:
-            p.start()
-        
-        while not endevent.is_set():
-            sleep(1)
+            # start processes
+            LOGGER.debug("starting processes")
+            for p in processes:
+                p.start()
 
-        # ----------------------------------------------------------------------
-        # 3. Endphase - cleaning up ressources
-        # ----------------------------------------------------------------------
-        LOGGER.info("endevent was set")
-        logging_q.put('TER')
-        
-        for p in processes:
-            p.join(10)          
-            if p.is_alive():
-                LOGGER.warning("process {} has not ended - using terminate command".format(p.name))
-                p.terminate()                
+            LOGGER.info("idling until endevent is signaled...")
+            current_threadname = threading.currentThread().getName()
+
+            t0_livesignal = 0
+            while not endevent.is_set():
+                if time()-t0_livesignal > self.config.freq_livesignal:
+                    t0_livesignal = time()
+                    data = (
+                        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        __name__,
+                        gymdata.MonitoringLabel.LIVESIGNAL,
+                        {p.name: p.is_alive() for p in processes})
+                    monitoring_q.put(data)
+                sleep(1)
+                
+
+            # ----------------------------------------------------------------------
+            # 3. Endphase - cleaning up ressources
+            # ----------------------------------------------------------------------
+            
+            cleanup()
+            return
+        except Exception as exc:
+            LOGGER.error("exception: {}".format(exc))
+            LOGGER.info("signaling endevent and attempting cleanup")            
+            try:
+                endevent.set()
+                cleanup()
+            except Exception as finalexc:    
+                LOGGER.error("exception: {}".format(finalexc))
+                LOGGER.error("terminating without cleanup")
+                LOGGER.error("some threads or processes might still be running")
+           
+    @staticmethod
+    def _monitoring(inbox_q: mpq.Queue, gympath: gymdata.GymPath):
+        """Entry for a thread managing data and signals for monitoring"""
+        threadname = threading.currentThread().getName()
+        logger = LOGGER.getChild(threadname)
+        logger.setLevel(logging.DEBUG)
+        logger.info(f"{threadname} started")
+        while True:
+            data = inbox_q.get(block=True)
+            if data == 'TER':
+                logger.info(f"received {data}")
+                break
             else:
-                LOGGER.info("process {} has ended".format(p.name))
-        
-        for t in threads:
-            t.join(10)
-            if t.is_alive():
-                LOGGER.warning("thread {} has not ended".format(t.name))
-            else:
-                LOGGER.info("thread {} has ended".format(t.name))
+                logger.debug(f"received {data}")
+                timestamp, sender, label, content = data
+                
+                if label == gymdata.MonitoringLabel.LIVESIGNAL:
+                    filepath = f"{gympath.monitoring_folder}/livesignal.json"
+                    with open(filepath, 'a+') as f:
+                        f.write(f"{timestamp}|{json.dumps(content)}\n")
 
-        for q in queues:
-            if not q.empty():
-                LOGGER.info("{} items on queue {} - emptying".format(q.qsize(), q.name))
-                while not q.empty():
-                    q.get()
-            if isinstance(q, mpq.Queue):
-                q.close()
-                q.join_thread()            
-                LOGGER.info("queue {} joined".format(q.name))
-        LOGGER.info("ending")
-        return
+                if label == gymdata.MonitoringLabel.SELFPLAYSTATS:
+                    filepath = f"{gympath.monitoring_folder}/{sender}_stats.json"
+                    with open(filepath, 'a+') as f:
+                        f.write(f"{timestamp}|{json.dumps(content)}\n")
+
+
+
+
     
     @staticmethod
-    def _keyboard_listener(endevent : threading.Event):
+    def _inputreader(endevent : multiprocessing.Event):
         """Entry for a thread waiting for keyboard input."""
         threadname = threading.currentThread().getName()
-        logger = logging.getLogger(threadname)
+        logger = LOGGER.getChild(threadname)
         logger.setLevel(logging.DEBUG)
-        logger.info('keyboard_listener started')
+        logger.info('{} started'.format(threadname))
         while True:
             text = input()
             logger.info("registered input '{}'".format(text))
@@ -179,12 +257,12 @@ class GameGym():
                 return
            
     @staticmethod
-    def _distributed_logger(logging_q : mpq.Queue):
+    def _centrallogger(logging_q : mpq.Queue):
         """Entry for a thread handling logging from subprocesses via queues."""
         threadname = threading.currentThread().getName()
-        thread_logger = logging.getLogger(threadname)
-        thread_logger.info('distributed_logger starting')
-        while True:
+        thread_logger = LOGGER.getChild(threadname)
+        thread_logger.info('{} started'.format(threadname))
+        while True: # only calling process terminates - keeping logging alive 
             record = logging_q.get(block=True)
             if record == 'TER':
                 thread_logger.info('received {}'.format(record))
