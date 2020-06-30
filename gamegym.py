@@ -84,14 +84,14 @@ class GameGym():
                 daemon=True, # note: also execpts 'TER' signal for a regular shutdown
                 name="logging")
             inputreader_thread= threading.Thread(
-                target=self.__class__._inputreader,
+                target=self.__class__._inputreader_worker,
                 daemon=True, # note: due to input() blocking, there is no end signaling for this thread
                 args=(endevent,),
                 name="inputreader")
             monitoring_thread = threading.Thread(
                 target=self._monitoring_worker,
                 daemon=True, # note: also execpts 'TER' signal for a regular shutdown
-                args =(monitoring_q),
+                args =(monitoring_q,),
                 name="monitoring"
             )     
             threads = [logging_thread, inputreader_thread, monitoring_thread]
