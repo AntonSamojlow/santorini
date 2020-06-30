@@ -9,7 +9,7 @@ import os
 from math import sqrt
 from time import time, sleep
 from datetime import datetime
-from random import choice, choices
+from random import choice, choices, random
 from collections import deque
 
 import numpy as np
@@ -33,7 +33,8 @@ class Selfplayer(multiprocessing.Process):
         graph.truncate_to_roots()
         self.name = name
         self._mcts_graph = graph.copy()
-        self._mcts_searchtable = {}
+        self._mcts_searchtable = dict()
+        self._mcts_current_expansions = set()
         self.config = config
         self.endevent = endevent         
         self.logging_q = logging_q
@@ -42,9 +43,8 @@ class Selfplayer(multiprocessing.Process):
         self.gympath = gympath
         self.monitoring_q = monitoring_q
         self.logger : logging.Logger
-        self.debug_stats = {'select_wait':[], 'predict_wait':[]}
+        self.debug_stats = {'searches':0, 'select_wait':[], 'predict_wait':[]}
         self._records = deque([])
-
 
     @property
     def mcts_graph(self):
@@ -53,6 +53,10 @@ class Selfplayer(multiprocessing.Process):
     @property
     def mcts_searchtable(self):
         return self._mcts_searchtable
+
+    @property
+    def mcts_current_expansions(self):
+        return self._mcts_current_expansions
 
     def run(self):
        # logging setup
@@ -67,11 +71,12 @@ class Selfplayer(multiprocessing.Process):
         self.logger.info("started and initialized logger")
 
         try:
-
             # ressources shared among threads:
             self.mcts_request_q = NamedQueue("mcts_request_q")
             self.mcts_response_q = NamedQueue("mcts_response_q")
             self.mcts_graph_lock = threading.Lock()
+            self.mcts_table_lock = threading.Lock()
+            self.mcts_expansion_lock = threading.Lock()
             self.terminateevent = threading.Event()
             queues = [self.mcts_request_q, self.mcts_response_q]    
 
@@ -82,20 +87,9 @@ class Selfplayer(multiprocessing.Process):
             for _ in range(self.config.searchthreadcount):
                 thread_prediction_lock = threading.Lock()
                 thread_predict_response_q = NamedQueue("")
-                thread = threading.Thread(target=_MCTSsearcher,
-                    args=(self.mcts_graph, 
-                    self.mcts_searchtable, 
-                    self.config,
-                    self.terminateevent,
-                    self.mcts_request_q,
-                    self.mcts_response_q,
-                    self.mcts_graph_lock,
-                    thread_prediction_lock,
-                    self.predict_request_q,
-                    thread_predict_response_q,
-                    self.logger,
-                    self.name,
-                    self.debug_stats))            
+                thread = threading.Thread(
+                    target=self._MCTS_worker, 
+                    args=(thread_prediction_lock, thread_predict_response_q,))            
                 thread.start()
                 while thread.native_id is None: # wait until thread has started
                     sleep(0.1)
@@ -108,31 +102,13 @@ class Selfplayer(multiprocessing.Process):
             queues += list(self.thread_predict_response_qs.values())
 
             t0_statssignal = 0
-            gamecount=0
             while not self.endevent.is_set():
                 if time()-t0_statssignal > self.config.freq_statssignal:
                     t0_statssignal = time()
-                    stats = {
-                        'recordcount': len(self._records),
-                        'gamecount': gamecount,
-                        'select_wait_sum':  sum(self.debug_stats['select_wait']),
-                        'select_wait_count': len(self.debug_stats['select_wait']),
-                        'predict_wait_sum':  sum(self.debug_stats['predict_wait']),
-                        'predict_wait_count': len(self.debug_stats['predict_wait'])
-                        }
-                    data = (
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        f"{__name__}[{self.pid}]",
-                        gymdata.MonitoringLabel.SELFPLAYSTATS,
-                        stats)
-                    self.monitoring_q.put(data)
-                    self.debug_stats['predict_wait'].clear()
-                    self.debug_stats['select_wait'].clear()
-
+                    self._sendstats()
                 newrecords = self._selfplay()
-                self.append_records(newrecords)
+                self.cache_records(newrecords)
                 self.logger.debug("appended {} new records to game record pool".format(len(newrecords)))
-                gamecount+=1
             
 
             self.terminateevent.set()
@@ -140,22 +116,22 @@ class Selfplayer(multiprocessing.Process):
             for t in self.search_threads:
                 if t.is_alive() and self.thread_prediction_locks[t.native_id].locked():               
                     try:
-                        self.thread_predict_response_qs[t.native_id].put([[] , 0.0])
+                        self.thread_predict_response_qs[t.native_id].put('TER')
                         self.thread_prediction_locks[t.native_id].release()
                     except RuntimeError:
                         self.logger.warning("failed to release predict_lock for thread {}".format(t.native_id))
                         pass
 
             self.logger.debug("writing playrecords to file...")
-            self._dump_records()
+            self._dump_cached_records()
             self.logger.debug("...done")
             
             for t in self.search_threads:
                 t.join(5)
                 if t.is_alive():
-                    self.logger.warning("thread {} has not ended".format(t.name))
+                    self.logger.warning(f"thread {t.native_id} has not ended")
                 else:
-                    self.logger.debug("thread {} has ended".format(t.name))
+                    self.logger.debug(f"thread {t.native_id} has ended")
             for q in queues:
                 if not q.empty():
                     self.logger.debug("{} items on queue {} - emptying".format(q.qsize(), q.name))
@@ -173,7 +149,25 @@ class Selfplayer(multiprocessing.Process):
             self.logger.error("exception: {}".format(exc))
             self.logger.info("signaling endevent and terminating")
             self.endevent.set()
-                
+
+    def _sendstats(self):        
+        stats = {           
+            'searches': self.debug_stats['searches'],
+            'select_wait_sum':  sum(self.debug_stats['select_wait']),
+            'select_wait_count': len(self.debug_stats['select_wait']),
+            'predict_wait_sum':  sum(self.debug_stats['predict_wait']),
+            'predict_wait_count': len(self.debug_stats['predict_wait'])
+            }
+        data = (
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            f"{__name__}[{self.pid}]",
+            gymdata.MonitoringLabel.SELFPLAYSTATS,
+            stats)
+        self.monitoring_q.put(data)
+        self.debug_stats['predict_wait'].clear()
+        self.debug_stats['select_wait'].clear()
+        self.debug_stats['searches'] = 0
+
 
     def _selfplay(self) -> list:
         self.mcts_graph.truncate_to_roots()
@@ -194,7 +188,7 @@ class Selfplayer(multiprocessing.Process):
         return gamelog
 
     def _MCTSrun(self, vertex):
-        self.logger.debug("MCTSrun called on vertex {}".format(vertex))  
+        # self.logger.debug("MCTSrun called on vertex {}".format(vertex))  
         for _ in range(0, self.config.searchcount):
             self.mcts_request_q.put(vertex)
         replies = 0
@@ -207,33 +201,24 @@ class Selfplayer(multiprocessing.Process):
                 thread_id, prediction = message
                 self.thread_predict_response_qs[thread_id].put([tuple(prediction[0][0]),float(prediction[1])])
                 self.thread_prediction_locks[thread_id].release()
-            if not self.mcts_response_q.empty():
-                path = self.mcts_response_q.get()
-                with self.mcts_graph_lock:
-                    self._update(path)               
-                replies += 1
-        self.logger.debug(f"MCTS finished {self.config.searchcount} searches")
+            if not self.mcts_response_q.empty():               
+                try:
+                    response = self.mcts_response_q.get()
+                    if response == "SEARCH_COMPLETE":
+                        self.debug_stats['searches']+=1
+                        replies += 1
+                except queue.Empty:
+                    pass                
+        self.logger.debug(f"MCTS finished {self.config.searchcount} searches on {vertex} -> {self.mcts_searchtable[vertex]}")
         return
 
-    def _update(self, path):
-        end_val = self.mcts_searchtable[path[-1]]['Q']   
-        for i in range(0, len(path) - 1): 
-            sign = 1 - 2*int(i % 2 == path.__len__() % 2)
-            j = self.mcts_graph.children_at(path[i]).index(path[i+1])
-            self.mcts_searchtable[path[i]]['N'][j] += 1
-            self.mcts_searchtable[path[i]]['Q'] +=\
-                (sign*end_val - self.mcts_searchtable[path[i]]['Q'])\
-                /sum(self.mcts_searchtable[path[i]]['N'])
-            self.mcts_searchtable[path[i]]['VL'] = 0
-        return
-
-    def append_records(self, newrecords):
+    def cache_records(self, newrecords):
         for r in newrecords:
             self._records.append(r)
         while len(self._records) >= self.config.record_dumpbatchsize:
-            self._dump_records(batchsize=self.config.record_dumpbatchsize)
+            self._dump_cached_records(batchsize=self.config.record_dumpbatchsize)
 
-    def _dump_records(self, batchsize=None):
+    def _dump_cached_records(self, batchsize=None):
         if len(self._records) < 2:
             self.logger.warning("nothing to dump - records list has one or no elements")
             return
@@ -269,97 +254,107 @@ class Selfplayer(multiprocessing.Process):
         np.savetxt(os.path.join(folderpath, '{}.y_val.csv'.format(prefix)), np.array(val_vec), delimiter=',')
         np.savetxt(os.path.join(folderpath, '{}.y_pi.csv'.format(prefix)), np.array(pi_vec), delimiter=',')
 
-def _MCTSsearcher(
-        graph : GameGraph, 
-        searchtable : dict, 
-        config : gymdata.SelfPlayConfig,
-        terminateevent : threading.Event,
-        request_q : queue.Queue, 
-        response_q : queue.Queue, 
-        graphlock : threading.Lock, 
-        prediction_lock : threading.Lock, 
-        predict_request_q : mpq.Queue, 
-        predict_response_q : mpq.Queue,
-        parentlogger: logging.Logger,
-        selfplayername: str,
-        debug_stats : list):       
-    # logging setup
-    thread_id = threading.get_ident()
-    logger = parentlogger.getChild("Thread-{}".format(thread_id))
-    logger.debug("started and initialized logger")
+    def _MCTS_worker(self, prediction_lock:threading.Lock, thread_response_q:queue.Queue):
+        # logging setup
+        thread_id = threading.get_ident()
+        logger = self.logger.getChild("Thread-{}".format(thread_id))
+        logger.debug("started and initialized logger")
 
-    def predictor(vertex):
-        prediction_lock.acquire()
-        predict_request_q.put((selfplayername, thread_id, graph.numpify(vertex)))
-        # waiting for predictor_proc to release the lock
-        # alternative: check against lock.locked() ?
-        with prediction_lock: 
-            logger.debug("acquired prediction lock, reading from queue...")
-            return predict_response_q.get()                 
-
-    def select(vertex):
-        logger.debug("select({})".format(vertex))
-        if graph.open_at(vertex) or graph.terminal_at(vertex):
-            return [vertex]
-        t0 = time()
-        while vertex not in searchtable:
-            sleep(config.sleeptime_blocked_select)                
-        debug_stats['select_wait'].append(time()-t0)
-
-        # check event here since another blocking thread may have been given 'fake' predictions
-        if terminateevent.is_set():
-            return [vertex]
+        def select(vertex):
+            # logger.debug(f"select({vertex})")
+            if self.mcts_graph.open_at(vertex):
+                with self.mcts_expansion_lock:
+                    if not vertex in self.mcts_current_expansions:
+                        self.mcts_current_expansions.add(vertex)
+                        # logger.debug(f"added {vertex} to current_expansions, exiting select")
+                        return [vertex]
         
-        # thread safe operation - else we need another lock   
-        searchtable[vertex]['VL'] = config.virtualloss    
+            
+            if vertex in self.mcts_current_expansions: 
+                # logger.debug("entering wait state for ({})".format(vertex))
+                t0 = time()
+                while vertex in self.mcts_current_expansions:
+                    sleep(0.01)
+                    if self.terminateevent.is_set():
+                        return []
+                self.debug_stats['select_wait'].append(time()-t0)
+                # logger.debug("exiting wait state for ({})".format(vertex))
 
-        visits = searchtable[vertex]['N']
-        def U(child):
-            try:
-                c_val = searchtable[child]['Q'] + searchtable[child]['VL']
-            except KeyError:
-                c_val = 0
-            j = graph.children_at(vertex).index(child)
-            prob = searchtable[vertex]['P'][j]
-            return c_val - config.exploration_const*prob*sqrt(sum(visits))/(1+visits[j])
-        return [vertex] + select(min(graph.children_at(vertex), key=U))
+            if self.mcts_graph.terminal_at(vertex):
+                # logger.debug("exiting select: {} is terminal".format(vertex))
+                return [vertex]
+            
+            visits = self.mcts_searchtable[vertex]['N']
+            def U(child):
+                try:
+                    c_val = self.mcts_searchtable[child]['Q'] + self.config.virtualloss*int(child in self._mcts_current_expansions)
+                except KeyError: # excpect error if child is open
+                    c_val = (1-2*random())/1000 # adding noise for open children
+                j = self.mcts_graph.children_at(vertex).index(child)
+                prob = self.mcts_searchtable[vertex]['P'][j]
+                return c_val - self.config.exploration_const*prob*sqrt(sum(visits))/(1+visits[j])
+            return [vertex] + select(min(self.mcts_graph.children_at(vertex), key=U))
 
-    def expand(vertex):
-        # logger.debug("expand({})".format(vertex))
-        if graph.open_at(vertex):     
-            # block all other threads until graph has been expanded           
-            with graphlock: 
-                # logger.debug("acquired graphlock for expanding at {}".format(vertex))
-                if graph.open_at(vertex): # check again before expanding  
-                    graph.expand_at(vertex)    
+        def expand(vertex) -> bool:
+            # logger.debug("expand({})".format(vertex))
+            if self.mcts_graph.open_at(vertex):     
+                # block all other threads until graph has been expanded           
+                with self.mcts_graph_lock: 
+                    # logger.debug("acquired graphlock for expanding at {}".format(vertex))               
+                    self.mcts_graph.expand_at(vertex)    
                     # logger.debug("expanded at {}".format(vertex))
 
-            # initialize table statistics
-            if graph.terminal_at(vertex): 
-                tableentry = {
-                    'N': [], 
-                    'Q': graph.score_at(vertex), 
-                    'P': [],
-                    'VL': 0}
-            else:
-                t0 = time()
-                prediction = predictor(vertex)
-                debug_stats['predict_wait'].append(time()-t0)
-                tableentry = {
-                        'N': [0 for c in graph.children_at(vertex)],
-                        'Q': prediction[1],
-                        'P': prediction[0][:len(graph.children_at(vertex))],
-                        'VL': 0} 
-            if vertex not in searchtable:
-                searchtable[vertex] = tableentry                 
-        return
-    
-    while not terminateevent.is_set():
-        try:
-            request = request_q.get(block=True, timeout=0.1)
-            path = select(request)   
-            expand(path[-1])
-            response_q.put(path)
-        except queue.Empty:
-            pass
-    logger.debug("terminate event received - terminating")
+                # initialize table statistics
+                if self.mcts_graph.terminal_at(vertex): 
+                    # logger.debug(f"graph.terminal_at({vertex})")
+                    tableentry = {
+                        'N': [], 
+                        'Q': self.mcts_graph.score_at(vertex), 
+                        'P': []}
+                else:
+                    # logger.debug(f"predicting: {vertex}")
+                    t0 = time()
+                    prediction_lock.acquire()
+                    self.predict_request_q.put((self.name, thread_id, self.mcts_graph.numpify(vertex)))
+                    with prediction_lock: # waiting here for external proc/thread to release the lock...
+                        # logger.debug("acquired prediction lock, reading from queue...")
+                        prediction = thread_response_q.get()                       
+                        if prediction == 'TER':                            
+                            return False                        
+                    self.debug_stats['predict_wait'].append(time()-t0)
+                    # logger.debug(f"prediction received for: {vertex}")
+                    tableentry = {
+                            'N': [0 for c in self.mcts_graph.children_at(vertex)],
+                            'Q': prediction[1],
+                            'P': prediction[0][:len(self.mcts_graph.children_at(vertex))]} 
+                self.mcts_searchtable[vertex] = tableentry   
+                self.mcts_current_expansions.remove(vertex)
+            return True
+
+        def update(path):
+            # logger.debug("update({})".format(path))
+            with self.mcts_table_lock:
+                end_val = self.mcts_searchtable[path[-1]]['Q']   
+                for i in range(0, len(path) - 1): 
+                    sign = 1 - 2*int(i % 2 == path.__len__() % 2)
+                    j = self.mcts_graph.children_at(path[i]).index(path[i+1])
+                    self.mcts_searchtable[path[i]]['N'][j] += 1
+                    self.mcts_searchtable[path[i]]['Q'] +=\
+                        (sign*end_val - self.mcts_searchtable[path[i]]['Q'])\
+                        /sum(self.mcts_searchtable[path[i]]['N'])
+            # logger.debug("finished update({})".format(path))
+            return
+        
+        while not self.terminateevent.is_set():        
+            try:            
+                request = self.mcts_request_q.get(block=True, timeout=0.1)
+                path = select(request) 
+                if expand(path[-1]):
+                    update(path)
+                    self.mcts_response_q.put('SEARCH_COMPLETE')
+                # logger.debug("main thread was signalled: search complete")
+            except queue.Empty:
+                # logger.debug("failed to read from request_q")
+                pass
+        logger.debug("terminate event received - terminating")
+

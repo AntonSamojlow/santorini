@@ -10,7 +10,7 @@ class MonitoringLabel(enum.Enum):
 
 @dataclass
 class LoggingConfig():  
-    sizelimit_MB: float = 1
+    sizelimit_MB: float = 10
     backupCount: int = 9
     loglevel: str = "DEBUG"
 

@@ -21,7 +21,7 @@ if __name__ == "__main__":
     import gymdata
 
     # parameters
-    SG = santorini.SanGraph(santorini.Environment(dimension=3, units_per_player=1))
+    SG = santorini.SanGraph(santorini.Environment(dimension=5, units_per_player=2))
         
     # configuration
     PREDICT_CONFIG = gymdata.PredictConfig(
@@ -29,11 +29,11 @@ if __name__ == "__main__":
         use_gpu = False, 
         gpu_memorylimit = None)
     SELFPLAY_CONFIG = gymdata.SelfPlayConfig(
-        selfplayprocesses=4,
-        searchthreadcount=100, 
-        searchcount=500,
-        virtualloss=0.1,
-        record_dumpbatchsize = 250)   
+        selfplayprocesses=6,
+        searchthreadcount=32, 
+        searchcount=2000,
+        virtualloss=0.2,
+        record_dumpbatchsize = 100)   
     TRAIN_CONFIG = gymdata.TrainConfig(
         epochs = 500, 
         batchsize = 100, 
@@ -41,7 +41,7 @@ if __name__ == "__main__":
         max_samplecount = 250000, 
         max_sampleage = -1, # this disables training
         validation_split = 0.2,
-        use_gpu = True, 
+        use_gpu = False, 
         gpu_memorylimit = None)
    
     GYM_SETTINGS = gymdata.GymConfig(PREDICT_CONFIG, SELFPLAY_CONFIG, TRAIN_CONFIG)
@@ -53,5 +53,6 @@ if __name__ == "__main__":
     
     # run
     GYM.resume()
+    
 
     logging.info('*** script end')

@@ -53,14 +53,12 @@ class GameGym():
             with open(self.path.modelinfo_file, 'w+') as f:
                 f.write(gymdata.ModelInfo(0).as_json(indent=0))
                 LOGGER.debug("created new model info file (iteration count = 0)")
-            
-                        
-  
+ 
     @property
     def path(self):
         return self._path
 
-    def resume(self):
+    def resume(self, runtime_in_sec=None):
         try:
             # ----------------------------------------------------------------------
             # 1. Start - initialize ressources
@@ -81,19 +79,19 @@ class GameGym():
             
             # threads - configuration and start
             logging_thread = threading.Thread(
-                target=self.__class__._centrallogger,
+                target=self.__class__._centrallogger_worker,
                 args=(logging_q,), 
                 daemon=True, # note: also execpts 'TER' signal for a regular shutdown
                 name="logging")
             inputreader_thread= threading.Thread(
-                target=self._inputreader,
+                target=self.__class__._inputreader,
                 daemon=True, # note: due to input() blocking, there is no end signaling for this thread
                 args=(endevent,),
                 name="inputreader")
             monitoring_thread = threading.Thread(
-                target=self._monitoring,
+                target=self._monitoring_worker,
                 daemon=True, # note: also execpts 'TER' signal for a regular shutdown
-                args =(monitoring_q,self.path),
+                args =(monitoring_q),
                 name="monitoring"
             )     
             threads = [logging_thread, inputreader_thread, monitoring_thread]
@@ -183,6 +181,7 @@ class GameGym():
             current_threadname = threading.currentThread().getName()
 
             t0_livesignal = 0
+            t0_start = time()
             while not endevent.is_set():
                 if time()-t0_livesignal > self.config.freq_livesignal:
                     t0_livesignal = time()
@@ -193,7 +192,10 @@ class GameGym():
                         {p.name: p.is_alive() for p in processes})
                     monitoring_q.put(data)
                 sleep(1)
-                
+
+                if runtime_in_sec != None:
+                    if time()-t0_start > runtime_in_sec:
+                        endevent.set()
 
             # ----------------------------------------------------------------------
             # 3. Endphase - cleaning up ressources
@@ -212,8 +214,7 @@ class GameGym():
                 LOGGER.error("terminating without cleanup")
                 LOGGER.error("some threads or processes might still be running")
            
-    @staticmethod
-    def _monitoring(inbox_q: mpq.Queue, gympath: gymdata.GymPath):
+    def _monitoring_worker(self, inbox_q: mpq.Queue):
         """Entry for a thread managing data and signals for monitoring"""
         threadname = threading.currentThread().getName()
         logger = LOGGER.getChild(threadname)
@@ -229,21 +230,17 @@ class GameGym():
                 timestamp, sender, label, content = data
                 
                 if label == gymdata.MonitoringLabel.LIVESIGNAL:
-                    filepath = f"{gympath.monitoring_folder}/livesignal.json"
+                    filepath = f"{self.path.monitoring_folder}/livesignal.json"
                     with open(filepath, 'a+') as f:
                         f.write(f"{timestamp}|{json.dumps(content)}\n")
 
                 if label == gymdata.MonitoringLabel.SELFPLAYSTATS:
-                    filepath = f"{gympath.monitoring_folder}/{sender}_stats.json"
+                    filepath = f"{self.path.monitoring_folder}/{sender}_stats.json"
                     with open(filepath, 'a+') as f:
                         f.write(f"{timestamp}|{json.dumps(content)}\n")
-
-
-
-
     
     @staticmethod
-    def _inputreader(endevent : multiprocessing.Event):
+    def _inputreader_worker(endevent : multiprocessing.Event):
         """Entry for a thread waiting for keyboard input."""
         threadname = threading.currentThread().getName()
         logger = LOGGER.getChild(threadname)
@@ -257,7 +254,7 @@ class GameGym():
                 return
            
     @staticmethod
-    def _centrallogger(logging_q : mpq.Queue):
+    def _centrallogger_worker(logging_q : mpq.Queue):
         """Entry for a thread handling logging from subprocesses via queues."""
         threadname = threading.currentThread().getName()
         thread_logger = LOGGER.getChild(threadname)
@@ -268,5 +265,11 @@ class GameGym():
                 thread_logger.info('received {}'.format(record))
                 break
             LOGGER.handle(record)
+            qsize = logging_q.qsize()
+            if qsize > 10:
+                thread_logger.warning(f"logging_q has size {qsize}")
+                if logging_q.full():
+                    thread_logger.warning(f"logging_q is full")
+           
 
             
