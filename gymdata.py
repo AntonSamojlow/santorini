@@ -1,18 +1,46 @@
 import logging
 import json
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass
 
 class MonitoringLabel(enum.Enum):
     LIVESIGNAL = enum.auto()
     SELFPLAYSTATS = enum.auto()
     
 
+class JSONSerializableDataClass():
+    """Provides JSON serialization support for (nested) dataclasses"""
+
+    def as_json(self, indent=2):           
+        return json.dumps(self, cls=self.DataClassEncoder, indent=indent)
+
+    @classmethod
+    def from_json(cls, string):
+        def decode(dct):
+            for subclass in JSONSerializableDataClass.__subclasses__():
+                if subclass.__name__ in dct:   
+                    content = dict(dct)
+                    content.pop(subclass.__name__)   
+                    return subclass(*content.values())
+            return dct 
+        return json.loads(string, object_hook=decode)
+
+    class DataClassEncoder(json.JSONEncoder):
+        """Custom Encoder"""
+        def default(self, obj):  # pylint: disable=E0202
+            if is_dataclass(obj):
+                content = {obj.__class__.__name__ : True}
+                content.update(obj.__dict__)
+                return content
+            return json.JSONEncoder.default(self, obj)
+
+
 @dataclass
-class LoggingConfig():  
+class LoggingConfig(JSONSerializableDataClass):  
     sizelimit_MB: float = 10
     backupCount: int = 9
     loglevel: str = "DEBUG"
+    tf_loglevel: str = 'ERROR'
 
     def getRotatingFileHandler(self, logpath: str):
         rfh = logging.handlers.RotatingFileHandler(logpath, 
@@ -22,15 +50,15 @@ class LoggingConfig():
         return rfh
 
 @dataclass
-class PredictConfig():
+class PredictConfig(JSONSerializableDataClass):
     batchsize: int
-    trygetbatchsize_timeout = 0.1
+    trygetbatchsize_timeout = 0.1   
     logging: LoggingConfig = LoggingConfig()
     use_gpu: bool = True
     gpu_memorylimit: int = None
 
 @dataclass
-class SelfPlayConfig():
+class SelfPlayConfig(JSONSerializableDataClass):
     selfplayprocesses :  int
     searchthreadcount : int
     searchcount : int
@@ -38,12 +66,12 @@ class SelfPlayConfig():
     virtualloss: float = 0.1
     sleeptime_blocked_select: float = 0.1
     temperature: float = 1.0
-    record_dumpbatchsize: int = 100
+    gamelog_dump_threshold: int = 10
     freq_statssignal: int = 60
     logging: LoggingConfig = LoggingConfig()
     
 @dataclass
-class TrainConfig():
+class TrainConfig(JSONSerializableDataClass):
     epochs: int    
     batchsize: int
     min_samplecount: int
@@ -55,7 +83,7 @@ class TrainConfig():
     gpu_memorylimit: int = None
 
 @dataclass
-class GymConfig():
+class GymConfig(JSONSerializableDataClass):
     predict: PredictConfig
     selfplay: SelfPlayConfig 
     train: TrainConfig
@@ -63,7 +91,7 @@ class GymConfig():
     logging: LoggingConfig = LoggingConfig()
 
 @dataclass
-class GymPath():
+class GymPath(JSONSerializableDataClass):
     basefolder : str
 
     @property
@@ -102,25 +130,7 @@ class GymPath():
             self.monitoring_folder]
 
 @dataclass
-class ModelInfo():
+class ModelInfo(JSONSerializableDataClass):
     iterationNr: int
 
-    def as_json(self, indent=2):
-        class GameGraphEncoder(json.JSONEncoder):
-            """Custom Encoder"""
-            def default(self, obj):  # pylint: disable=E0202
-                if isinstance(obj, ModelInfo):        
-                    return {
-                        obj.__class__.__name__: True,                        
-                        'iterationNr' : obj.iterationNr}
-                return json.JSONEncoder.default(self, obj)
-        return json.dumps(self, cls=GameGraphEncoder, indent=indent)
 
-    @classmethod
-    def from_json(cls, string) -> 'ModelInfo':
-        def decode(dct):
-            if cls.__name__ in dct:      
-                return cls(
-                    iterationNr= int(dct['iterationNr']))                   
-            return dct
-        return json.loads(string, object_hook=decode)    

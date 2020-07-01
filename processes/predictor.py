@@ -40,11 +40,13 @@ class Predictor(multiprocessing.Process):
         self.logger.addHandler(qh)
         self.logger.info("started and initialized logger")
         try:       
-            import tensorflow as tf        
+            import tensorflow as tf
             self.logger.info('imported TensorFlow {0}'.format(tf.__git_version__))
             tflogger = tf.get_logger()
             tflogger.addHandler(rfh)
-            tflogger.setLevel(logging.WARNING)   
+            tflogger.setLevel(self.config.logging.tf_loglevel)   
+            self.logger.info(f"changed tensorflow log level to {self.config.logging.tf_loglevel}")
+
 
             tf_device = "/cpu:0"
             if self.config.use_gpu:

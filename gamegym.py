@@ -19,6 +19,7 @@ from processes.selfplayer import Selfplayer
 
 LOGGER = logging.getLogger(__name__)
 
+
 def getLogger():
     return LOGGER
 
@@ -30,24 +31,62 @@ class GameGym():
         gym_config: gymdata.GymConfig = None):
         self.graph = graph
         self._path = gymdata.GymPath(session_path)
+        self.config : gymdata.GymConfig
 
+        # ----------------------------------------------------------------------
+        # 1. Initialization and (some) validation of session folders and content
+        # ----------------------------------------------------------------------      
         if os.path.exists(self.path.basefolder):
             for p in self.path.subfolders:
                 if not os.path.exists(p):
                     raise Exception("Can not load GameGym from basefolder '{}' - missing folder '{}'".format(self.path.basefolder, p))
         else:           
             for p in self.path.subfolders:                
-                    os.makedirs(p)
-        
+                os.makedirs(p)
+       
         if gym_config == None:
-            raise Exception("Can not initialize GameGym, loading config not yet implemented")
+            if not os.path.exists(self.path.config_file):
+                raise Exception(f"Can not load GameGym - missing config file '{self.path.config_file}'")
+            with open(self.path.config_file) as f:
+                self.config = gymdata.GymConfig.from_json(f.read())
         else:
             self.config = gym_config
+            with open(self.path.config_file, 'w+') as f:
+                f.write(self.config.as_json())
         
+        # ----------------------------------------------------------------------
+        # 2. Logging setup
+        # ----------------------------------------------------------------------  
         logfilepath = os.path.join(self.path.log_folder,"{}.log".format(type(self).__name__))
-        LOGGER.addHandler(gym_config.logging.getRotatingFileHandler(logfilepath))
+        LOGGER.addHandler(self.config.logging.getRotatingFileHandler(logfilepath))
+        
+        if self.config.logging.tf_loglevel == 'ERROR':
+            os.environ['TF_CPP_MIN_LOG_LEVEL']='3'
+            LOGGER.info(f"settings change: os.environ['TF_CPP_MIN_LOG_LEVEL']='3'")            
+        elif self.config.logging.tf_loglevel == 'WARNING':
+            os.environ['TF_CPP_MIN_LOG_LEVEL']='2'
+            LOGGER.info(f"settings change: os.environ['TF_CPP_MIN_LOG_LEVEL']='2'")
+        else:            
+            os.environ['TF_CPP_MIN_LOG_LEVEL']='0'
+            LOGGER.info(f"settings change: os.environ['TF_CPP_MIN_LOG_LEVEL']='0'")
 
-        if not intialmodelpath is None:            
+        # ----------------------------------------------------------------------
+        # 3. Copy initial model
+        # ----------------------------------------------------------------------  
+
+        if not intialmodelpath is None:                        
+            gamerecordpool = list(os.scandir(self.path.gamerecordpool_folder))
+            if len(gamerecordpool) > 0:
+                archivefolder = f"{self.path.gamerecordpool_folder}/-1"
+                LOGGER.warning(f"gamerecordpool contains {len(gamerecordpool)} folders - moving their content to {archivefolder}")
+                if not os.path.exists(archivefolder):
+                    os.makedirs(archivefolder)
+                for folder in gamerecordpool: 
+                    if int(folder.name) >= 0: 
+                        for recordfile in os.scandir(folder.path):              
+                            os.rename(recordfile.path,f"{archivefolder}/{recordfile.name}")
+                        os.removedirs(folder)
+
             copy_tree(intialmodelpath, self.path.model_folder)
             LOGGER.debug("copied initial model from '{}' to '{}'".format(intialmodelpath, self.path.model_folder))
             with open(self.path.modelinfo_file, 'w+') as f:
@@ -196,7 +235,6 @@ class GameGym():
                 if runtime_in_sec != None:
                     if time()-t0_start > runtime_in_sec:
                         endevent.set()
-
             # ----------------------------------------------------------------------
             # 3. Endphase - cleaning up ressources
             # ----------------------------------------------------------------------

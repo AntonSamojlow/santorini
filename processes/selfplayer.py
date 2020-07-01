@@ -44,7 +44,10 @@ class Selfplayer(multiprocessing.Process):
         self.monitoring_q = monitoring_q
         self.logger : logging.Logger
         self.debug_stats = {'searches':0, 'select_wait':[], 'predict_wait':[]}
-        self._records = deque([])
+        self._gamelogs = deque(())
+        self.modeliteration: int
+        with open(self.gympath.modelinfo_file) as f: 
+            self.modeliteration = gymdata.ModelInfo.from_json(f.read()).iterationNr
 
     @property
     def mcts_graph(self):
@@ -106,9 +109,9 @@ class Selfplayer(multiprocessing.Process):
                 if time()-t0_statssignal > self.config.freq_statssignal:
                     t0_statssignal = time()
                     self._sendstats()
-                newrecords = self._selfplay()
-                self.cache_records(newrecords)
-                self.logger.debug("appended {} new records to game record pool".format(len(newrecords)))
+                gamelog = self._selfplay()
+                self.cache_records(gamelog)
+                self.logger.debug("cached {} new records".format(len(gamelog)))
             
 
             self.terminateevent.set()
@@ -212,47 +215,52 @@ class Selfplayer(multiprocessing.Process):
         self.logger.debug(f"MCTS finished {self.config.searchcount} searches on {vertex} -> {self.mcts_searchtable[vertex]}")
         return
 
-    def cache_records(self, newrecords):
-        for r in newrecords:
-            self._records.append(r)
-        while len(self._records) >= self.config.record_dumpbatchsize:
-            self._dump_cached_records(batchsize=self.config.record_dumpbatchsize)
+    def cache_records(self, gamelog):
+        with open(self.gympath.modelinfo_file) as f: 
+            currentmodeliteration = gymdata.ModelInfo.from_json(f.read()).iterationNr
+        self._gamelogs.append((currentmodeliteration, datetime.now().strftime("%Y-%m-%dT%H%M%S"), gamelog))
+        if currentmodeliteration > self.modeliteration:
+            self.modeliteration = currentmodeliteration
+            self._dump_cached_records()                
+        while len(self._gamelogs) >= self.config.gamelog_dump_threshold:
+            self._dump_cached_records(batchsize=self.config.gamelog_dump_threshold)
 
     def _dump_cached_records(self, batchsize=None):
-        if len(self._records) < 2:
-            self.logger.warning("nothing to dump - records list has one or no elements")
+        if len(self._gamelogs) < 1:
+            self.logger.warning("nothing to dump")
             return
-        modeliteration: int
-        with open(self.gympath.modelinfo_file, 'r') as f:
-            modeliteration = gymdata.ModelInfo.from_json(f.read()).iterationNr 
-        folderpath = "{}/{}".format(self.gympath.gamerecordpool_folder, modeliteration)
-        try:
-            if not os.path.exists(folderpath):
-                os.makedirs(folderpath)
-        except FileExistsError: #due to several simultaneous processes accessing 
-            pass
-
         if batchsize == None:
-            batchsize = len(self._records)
+            batchsize = len(self._gamelogs)
         else:
-            batchsize = min(len(self._records), batchsize)        
+            batchsize = min(len(self._gamelogs), batchsize)        
 
-        records_to_dump =  [self._records.popleft() for _ in range(batchsize)]
-        x, val_vec, pi_vec = [], [], []
-        for turndata in records_to_dump:
-            pi = turndata[1]
-            if pi is not None: # filter out terminal states
-                x += [self.mcts_graph.numpify(turndata[0])]
-                val_vec += [float(turndata[2])]
-                # regularize dimension of pi and normalize to a proper probability
-                pi = [p/sum(pi) for p in pi]
-                for _ in range(len(pi), self.mcts_graph.outdegree_max):
-                    pi.append(0)
-                pi_vec += [pi]
-        prefix = "{}[{}]".format(datetime.now().strftime("%Y-%m-%dT%H_%M_%S"), self.pid)
-        np.savetxt(os.path.join(folderpath, '{}.x.csv'.format(prefix)), np.array(x), delimiter=',')
-        np.savetxt(os.path.join(folderpath, '{}.y_val.csv'.format(prefix)), np.array(val_vec), delimiter=',')
-        np.savetxt(os.path.join(folderpath, '{}.y_pi.csv'.format(prefix)), np.array(pi_vec), delimiter=',')
+        for entry in [self._gamelogs.popleft() for _ in range(batchsize)]:
+            modeliteration, timestamp, records = entry
+            if len(records) < 2:
+                self.logger.warning("skipping gamelog with less than 2 entries")
+                return
+                
+            folderpath = "{}/{}".format(self.gympath.gamerecordpool_folder, modeliteration)
+            try:
+                if not os.path.exists(folderpath):
+                    os.makedirs(folderpath)
+            except FileExistsError: #due to several simultaneous processes accessing 
+                pass
+
+            x, val_vec, pi_vec = [], [], []
+            for turndata in records:
+                pi = turndata[1]
+                if pi is not None: # filter out terminal states
+                    x += [self.mcts_graph.numpify(turndata[0])]
+                    val_vec += [float(turndata[2])]
+                    # regularize dimension of pi and normalize to a proper probability
+                    pi = [p/sum(pi) for p in pi]
+                    for _ in range(len(pi), self.mcts_graph.outdegree_max):
+                        pi.append(0)
+                    pi_vec += [pi]
+            np.savetxt(os.path.join(folderpath, f'{timestamp}[{self.pid}].x.csv'), np.array(x), delimiter=',')
+            np.savetxt(os.path.join(folderpath, f'{timestamp}[{self.pid}].y_val.csv'), np.array(val_vec), delimiter=',')
+            np.savetxt(os.path.join(folderpath, f'{timestamp}[{self.pid}].y_pi.csv'), np.array(pi_vec), delimiter=',')
 
     def _MCTS_worker(self, prediction_lock:threading.Lock, thread_response_q:queue.Queue):
         # logging setup

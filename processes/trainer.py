@@ -40,10 +40,12 @@ class Trainer(multiprocessing.Process):
 
         try:
             import tensorflow as tf
+
             self.logger.info('imported TensorFlow {0}'.format(tf.__git_version__))
             tflogger = tf.get_logger()
             tflogger.addHandler(rfh)
-            tflogger.setLevel(logging.WARNING)   
+            tflogger.setLevel(self.config.logging.tf_loglevel)   
+            self.logger.info(f"changed tensorflow log level to {self.config.logging.tf_loglevel}")
 
             history_plotter = HistoryPlotter(self.logger)
 
@@ -190,8 +192,9 @@ class Trainer(multiprocessing.Process):
                                     gymdata.json.dump(trainresult.history, f)
                                 self.logger.debug('saved trainhistory (iteration {})'.format(model_iteration))
 
-                                history_plotter.plot({"iteration {}".format(model_iteration):trainresult}, "loss",
-                                    savepath="{}/{}.png".format(self.gympath.trainhistories_folder, model_iteration))
+                                for metric in ["loss", "pi_loss", "v_loss"]:
+                                    history_plotter.plot({f"iteration {model_iteration}":trainresult}, metric,
+                                        savepath=f"{self.gympath.trainhistories_folder}/{model_iteration}_{metric}.png")
 
                                 MODEL.save_weights(os.path.join(self.gympath.weights_folder,"{}".format(model_iteration)), save_format='h5')
                                 self.logger.debug('weights saved (iteration {})'.format(model_iteration))

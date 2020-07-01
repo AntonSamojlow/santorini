@@ -4,7 +4,8 @@ import os
 import datetime
 
 if __name__ == "__main__":    
-    # root logging setup
+    # root logging setup   
+
     ch = logging.StreamHandler()
     ch.setLevel(logging.ERROR)
     fh = logging.FileHandler('{}.{}.log'.format(__file__, datetime.datetime.now().strftime("%d-%m-%Y %H_%M_%S")))
@@ -25,22 +26,22 @@ if __name__ == "__main__":
         
     # configuration
     PREDICT_CONFIG = gymdata.PredictConfig(
-        batchsize=50,
+        batchsize=75,
         use_gpu = False, 
         gpu_memorylimit = None)
     SELFPLAY_CONFIG = gymdata.SelfPlayConfig(
-        selfplayprocesses=6,
+        selfplayprocesses=8,
         searchthreadcount=25, 
-        searchcount=500,
+        searchcount=100,
         virtualloss=0.2,
-        record_dumpbatchsize = 1000)   
+        gamelog_dump_threshold = 10)   
     TRAIN_CONFIG = gymdata.TrainConfig(
         epochs = 500, 
         batchsize = 100, 
-        min_samplecount = 5000,
-        max_samplecount = 250000, 
-        max_sampleage = 1, # -1 here disables training
-        validation_split = 0.2,
+        min_samplecount = 500,
+        max_samplecount = 1000, 
+        max_sampleage = 2, # -1 here disables training
+        validation_split = 0.1,
         use_gpu = True, 
         gpu_memorylimit = None)
    
@@ -48,11 +49,9 @@ if __name__ == "__main__":
     GYM = gamegym.GameGym(
         session_path = '.session', 
         graph = SG, 
-        intialmodelpath ="initialmodels/dim{}_upp{}_init".format(SG.env.dimension, SG.env.units_per_player),
+        intialmodelpath=f"initialmodels/dim{SG.env.dimension}_upp{SG.env.units_per_player}_50x5_ADAM", 
         gym_config = GYM_SETTINGS)
     
     # run
     GYM.resume()
-    
-
     logging.info('*** script end')
