@@ -46,6 +46,7 @@ import logging
 
 import numpy
 import gamegraph
+from gamegraph import GameGraph
 
 
 LOGGER = logging.getLogger(__name__)
@@ -548,62 +549,62 @@ class SanGraph(gamegraph.GameGraph):
             roots = tuple([s.string() for s in env.start_states])        
         if childrentable is None:
             childrentable = {r : None  for r in roots}
-        outdegree_max_table = {
-            (3,1) : 27,
-            (3,2) : 28,
-            (4,1) : 46,
-            (4,2) : 66,
-            (5,1) : 63,
-            (5,2) : 100}
-            
+        
         try:
-            super().__init__(
-                childrentable=childrentable, 
-                roots=roots, 
-                description=description, 
-                outdegree_max=outdegree_max_table[(env.dimension, env.units_per_player)] )
+            outdegree_max = {
+                (3,1) : 27,
+                (3,2) : 28,
+                (4,1) : 46,
+                (4,2) : 66,
+                (5,1) : 63,
+                (5,2) : 100}[(env.dimension, env.units_per_player)]
         except KeyError:
-            raise Exception("Failed to generate graph - maximal outdegree unknown for dimension {} and {} units per player".format(env.dimension, env.units_per_player))
+            raise Exception(f"Failed to generate graph - maximal outdegree unknown for dimension {env.dimension} and {env.units_per_player} units per player")
 
+        super().__init__(
+            childrentable=childrentable, 
+            roots=roots, 
+            description=description, 
+            outdegree_max=outdegree_max)
         self.env = env
 
-    def as_json(self, indent=2):       
-        """Turn the Graph into a (relatively) compact JSON string. May need
-        adjustmemt for specific games / subclassed GameGraphs."""
-        class GameGraphEncoder(json.JSONEncoder):
-            """Custom Encode for class GameGraph."""
-
-            def default(self, obj):  # pylint: disable=E0202
-                if isinstance(obj, gamegraph.GameGraph):                  
-                    return {
-                        obj.__class__.__name__: True,
-                        'description' : obj.description,
-                        'environment' : 
-                        {
-                            'dimension' : obj.env.dimension,
-                            'units_per_player' :  obj.env.units_per_player
-                        },
-                        'childrentable' : obj._childrentable,
-                        'roots' : obj.roots}
-                return json.JSONEncoder.default(self, obj)
-        return json.dumps(self, cls=GameGraphEncoder, indent=indent)
-
+    
     @classmethod
-    def from_json(cls, string):
-        """Returns the GameGraph from a JSON string, inverse of 'to_json'.
-
-        [!] Must be reimplemented for other graphs with different attributes.
-        """
-        def decode(dct):
-            if cls.__name__ in dct:
-                env = dct['environment'] 
-                return cls(
-                    childrentable=dct['childrentable'], 
-                    roots=tuple(dct['roots']),
-                    description=dct['description'],
-                    env = Environment(env['dimension'], env['units_per_player']))
+    def from_json(cls, string) -> 'GameGraph':
+        """Inverse of 'as_json'. Restores tuples if they have been serialized as separate object."""      
+        def decode(dct): 
+            if f"__{cls.__name__}__" in dct:
+                content = GameGraph.SerializationTools.tuplify(dict(dct))
+                return SanGraph(
+                    Environment(dimension = content["env"]["dimension"], 
+                                units_per_player = content["env"]["units_per_player"]),
+                    childrentable=content["_childrentable"],
+                    description=content["description"],
+                    roots=content["roots"])
             return dct
-        return json.loads(string, object_hook=decode)     
+        return json.loads(string, object_hook=decode)
+
+    def as_json(self, indent=2, hint_tuples = True):
+        """Serializes the graph to JSON. If hint_tuples is true, tuples will be serialized as separate object."""
+        class TupleHintingEncoder(json.JSONEncoder):   
+            def default(self, obj):
+                if isinstance(obj, Environment):
+                    return {f"__EnvironmentData__": True,
+                            "dimension": obj.dimension,
+                            "units_per_player":obj.units_per_player}                
+                if isinstance(obj, GameGraph):
+                    content = {f"__{obj.__class__.__name__}__": True}
+                    content.update(obj.__dict__)
+                    if hint_tuples:
+                        return GameGraph.SerializationTools.hint_tuples(content)
+                    else:
+                        return content
+                return json.JSONEncoder.default(self, obj)
+        return json.dumps(self, cls=TupleHintingEncoder, indent=indent)
+    
+    def deepcopy(self):
+        """Lazy / ineffecient deepcopy function - we just serialize to JSON and desserialize"""
+        return SanGraph.from_json(self.as_json())
 
     def expand_at(self, vertex):
         if self.open_at(vertex):          
@@ -651,4 +652,3 @@ class SanGraph(gamegraph.GameGraph):
     def representative_of(self, vertex):
         return sorted(list(self.equivalenceclass_of(vertex)))[0]
 
-    

@@ -1,20 +1,6 @@
-# standard modules
-import logging
-import os
-import datetime
-
 if __name__ == "__main__":    
-    # root logging setup   
-
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.ERROR)
-    fh = logging.FileHandler('{}.{}.log'.format(__file__, datetime.datetime.now().strftime("%d-%m-%Y %H_%M_%S")))
-    fh.setLevel(logging.INFO)
-    logging.basicConfig(
-        handlers=[ch, fh],
-        level=logging.DEBUG, 
-        format='%(asctime)s {%(processName)s} [%(name)s] %(levelname)s: %(message)s')
-    logging.info('*** script start')
+    
+    print('*** script start')
 
     # custom modules
     import santorini
@@ -54,4 +40,4 @@ if __name__ == "__main__":
     
     # run
     GYM.resume()
-    logging.info('*** script end')
+    print('*** script end')

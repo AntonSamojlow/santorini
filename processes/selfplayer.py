@@ -32,7 +32,7 @@ class Selfplayer(multiprocessing.Process):
         super().__init__()
         graph.truncate_to_roots()
         self.name = name
-        self._mcts_graph = graph.copy()
+        self._mcts_graph = graph.deepcopy()
         self._mcts_searchtable = dict()
         self._mcts_current_expansions = set()
         self.config = config
@@ -233,6 +233,8 @@ class Selfplayer(multiprocessing.Process):
             batchsize = len(self._gamelogs)
         else:
             batchsize = min(len(self._gamelogs), batchsize)        
+
+        self.logger.info(f"storing cached batch of {batchsize} gamelogs to disk")
 
         for entry in [self._gamelogs.popleft() for _ in range(batchsize)]:
             modeliteration, timestamp, records = entry
