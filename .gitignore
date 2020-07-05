@@ -3,6 +3,7 @@ script_*
 *.ipynb
 *.ipynb_checkpoints
 *__pycache__
+*.pytest_cache
 *.archive
 *.vscode
 *.venv

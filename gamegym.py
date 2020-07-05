@@ -8,7 +8,7 @@ Main ingredients for a GameGym session are the GameGraph and the neural network:
 - Currently the neural network is assumed to be the path to a saved tf.keras model
 
 Flow overview:
-A GameGym instance reprsents a session and is tied to folder where the configuration, state, 
+A GameGym instance represents a session and is tied to folder where the configuration, state, 
 progress and logs are saved. The resume method starts/continues the RL loop. It only accepts 
 the keyboard input 'exit' to shutdown the loop. While running, several processes are managed:
 - Selfplayer(s): Generate the training material via selfplay. Each selfplay uses

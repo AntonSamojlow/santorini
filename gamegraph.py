@@ -74,28 +74,28 @@ class GameGraph(ABC):
     def expand_at(self, vertex):
         """Expands the graph at an open node. Should raise an exception 'VertexNotOpen' else"""
         if self.open_at(vertex):
-            pass
+            raise NotImplementedError("Not implemented")
         else:
             raise VertexNotOpen(f"{self.__class__}.expand_at called on NON-open vertex {vertex}")   
 
     @abstractmethod
     def score_at(self, vertex) -> float:
         """Usual convention for the Score: in the interval [-1,+1], representing the win chance from the given vertex"""
-        pass
+        raise NotImplementedError("Not implemented")
 
     @abstractmethod
     def numpify(self, vertex) -> 'array':
         """Ecnodes the vertex into a 'numpy.ndarray', for input to neural networks"""
-        pass
+        raise NotImplementedError("Not implemented")
 
     @abstractmethod
     def unnumpify(self, np_array: array):
         """Inverse of the method numpify, returntype is the type of a key in the childrentable"""
-        pass
+        raise NotImplementedError("Not implemented")
     
     def deepcopy(self):
         """Returns a new copy of the graph with the same structure."""
-        pass
+        raise NotImplementedError("Not implemented")
     
     # ---------- methods that _might_ need to be adjusted (overwritten) for specific graphs ----------
     def equivalenceclass_of(self, vertex) -> set:

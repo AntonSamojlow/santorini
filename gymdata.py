@@ -14,7 +14,7 @@ class MonitoringLabel(enum.Enum):
 
 
 class JSONSerializableDataClass():
-    """Provides JSON serialization support for (nested) dataclasses"""
+    """Custom JSON serialization support for (nested) dataclasses"""
     def as_json(self, indent=2):
         return json.dumps(self, cls=self.DataClassEncoder, indent=indent)
 
@@ -40,6 +40,7 @@ class JSONSerializableDataClass():
 
 @dataclass
 class LoggingConfig(JSONSerializableDataClass):
+    """Configuration for the logging setup of a GameGym-subprocess"""
     sizelimit_MB: float = 10
     backupCount: int = 9
     loglevel: str = "DEBUG"
@@ -59,6 +60,7 @@ class LoggingConfig(JSONSerializableDataClass):
 
 @dataclass
 class PredictConfig(JSONSerializableDataClass):
+    """Configuration for the Predictor subprocess"""
     batchsize: int
     trygetbatchsize_timeout = 0.1
     logging: LoggingConfig = LoggingConfig()
@@ -68,6 +70,7 @@ class PredictConfig(JSONSerializableDataClass):
 
 @dataclass
 class SelfPlayConfig(JSONSerializableDataClass):
+    """Configuration for the Selfplayer subprocess"""
     selfplayprocesses: int
     searchthreadcount: int
     searchcount: int
@@ -82,6 +85,8 @@ class SelfPlayConfig(JSONSerializableDataClass):
 
 @dataclass
 class TrainConfig(JSONSerializableDataClass):
+    """Configuration for the Trainer subprocess"""
+
     epochs: int
     batchsize: int
     min_samplecount: int
@@ -95,6 +100,7 @@ class TrainConfig(JSONSerializableDataClass):
 
 @dataclass
 class GymConfig(JSONSerializableDataClass):
+    """Configuration for the GameGym mainprocess"""
     predict: PredictConfig
     selfplay: SelfPlayConfig
     train: TrainConfig
@@ -104,7 +110,7 @@ class GymConfig(JSONSerializableDataClass):
 
 @dataclass
 class GymPath(JSONSerializableDataClass):
-    """Represent the fixed subfolder and file structure of a GamGym session with a given basefolder"""
+    """Represent the fixed subfolder and file structure of a GamGym session, based on the sessions basefolder"""
     basefolder: str
 
     @property
@@ -150,4 +156,5 @@ class GymPath(JSONSerializableDataClass):
 
 @dataclass
 class ModelInfo(JSONSerializableDataClass):
+    """Information about the currently active model of the GameGym session"""
     iterationNr: int

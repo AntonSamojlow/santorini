@@ -16,17 +16,17 @@ if __name__ == "__main__":
         use_gpu = False, 
         gpu_memorylimit = None)
     SELFPLAY_CONFIG = gymdata.SelfPlayConfig(
-        selfplayprocesses=8,
+        selfplayprocesses=6,
         searchthreadcount=25, 
-        searchcount=100,
+        searchcount=500,
         virtualloss=0.2,
         gamelog_dump_threshold = 10)   
     TRAIN_CONFIG = gymdata.TrainConfig(
         epochs = 500, 
         batchsize = 100, 
-        min_samplecount = 500,
+        min_samplecount = 400,
         max_samplecount = 1000, 
-        max_sampleage = 2, # -1 here disables training
+        max_sampleage = 1, # sett to '-1' here to  disable training
         validation_split = 0.1,
         use_gpu = True, 
         gpu_memorylimit = None)
@@ -35,7 +35,8 @@ if __name__ == "__main__":
     GYM = gamegym.GameGym(
         session_path = '.session', 
         graph = SG, 
-        intialmodelpath=f"initialmodels/dim{SG.env.dimension}_upp{SG.env.units_per_player}_50x5_ADAM", 
+        # remove the intialmodelpath if continuing from an exisiting session - else the model will be overwritten
+        intialmodelpath=f"D:\santorini\initialmodels\santorini\env(3-1)\model_50x5_ADAM_LR=1E-5_DR=0.2_L2=0.1", 
         gym_config = GYM_SETTINGS)
     
     # run

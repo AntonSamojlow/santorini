@@ -85,7 +85,7 @@ class Trainer(multiprocessing.Process):
                     if epoch % self.dot_every == 0:
                         print('.', end='', flush=True)   
 
-            def try_load_datasets() -> (int, tf.data.Dataset, tf.data.Dataset):
+            def try_load_datasets() -> tuple:
                 modeliteration: int
                 with open(self.gympath.modelinfo_file, 'r') as f:
                     modeliteration = gymdata.ModelInfo.from_json(f.read()).iterationNr 
