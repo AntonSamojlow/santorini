@@ -48,7 +48,6 @@ import numpy
 import gamegraph
 from gamegraph import GameGraph
 
-
 LOGGER = logging.getLogger(__name__)
 
 
@@ -65,7 +64,6 @@ class State():
         from_string (a classmethod),
         from_array  (a classmethod)
     """
-
     def __init__(self, board, units_player, units_opponent):
         self.board = board
         self.units_player = sorted(units_player)
@@ -87,14 +85,14 @@ class State():
         """Returns a State, inverse of State.string()"""
         [brd, u_p, u_o] = string.split('|')
         dimension = int(sqrt(brd.__len__()))
-        units_per_player = int(u_p.__len__()/2)
+        units_per_player = int(u_p.__len__() / 2)
         board, units_player, units_opponent = {}, [], []
         for row in range(0, dimension):
             for col in range(0, dimension):
-                board[(row, col)] = int(brd[row*dimension + col])
+                board[(row, col)] = int(brd[row * dimension + col])
         for i in range(0, units_per_player):
-            units_player += [(int(u_p[0+2*i]), int(u_p[1+2*i]))]
-            units_opponent += [(int(u_o[0+2*i]), int(u_o[1+2*i]))]
+            units_player += [(int(u_p[0 + 2 * i]), int(u_p[1 + 2 * i]))]
+            units_opponent += [(int(u_o[0 + 2 * i]), int(u_o[1 + 2 * i]))]
         return State(board, units_player, units_opponent)
 
     def print(self, file=None, initials=None):
@@ -112,10 +110,10 @@ class State():
         out = open(file, 'a', encoding='utf-8',
                    newline=None) if file else sys.stdout
 
-        for _ in range(0, int(3*dimension/2)):
+        for _ in range(0, int(3 * dimension / 2)):
             out.write('-')
         out.write(initials[0])
-        for _ in range(0, int(1/2 + 3*dimension/2)-1):
+        for _ in range(0, int(1 / 2 + 3 * dimension / 2) - 1):
             out.write('-')
         out.write('\n')
         for row in range(0, dimension):
@@ -128,7 +126,7 @@ class State():
                     out.write(' ')
                 out.write(str(self.board[(row, col)]) + ' ')
             out.write('\n')
-        for _ in range(0, 3*dimension):
+        for _ in range(0, 3 * dimension):
             out.write('-')
         out.write('\n')
 
@@ -149,32 +147,33 @@ class Environment():
         equiv_class, random_state, win_in, lose_in,
         heuristic_value
     """
-
     def __init__(self, dimension=5, units_per_player=2):
         self.dimension = dimension
-        self.units_per_player = units_per_player       
-        
+        self.units_per_player = units_per_player
+
         # computing the neighbour positions
         self.neighbours = {}
         for row in range(0, dimension):
             for col in range(0, dimension):
-                neighbours = [(row+x, col+y) for x in [-1, 0, 1]
-                              for y in [-1, 0, 1]
-                              if row+x >= 0 and row+x < dimension
-                              and col+y >= 0 and col+y < dimension
-                              and (x != 0 or y != 0)]
+                neighbours = [
+                    (row + x, col + y) for x in [-1, 0, 1] for y in [-1, 0, 1]
+                    if row + x >= 0 and row + x < dimension and col +
+                    y >= 0 and col + y < dimension and (x != 0 or y != 0)
+                ]
                 self.neighbours.update({(row, col): neighbours})
 
         # computing the possible start states (all possible unit positions)
         positions = list(self.neighbours.keys())
         u_list = [(p, ) for p in positions]
-        for _ in range(0, 2*self.units_per_player-1):  # add other units
+        for _ in range(0, 2 * self.units_per_player - 1):  # add other units
             u_list = [(*l, p) for p in positions for l in u_list if p not in l]
         u_list = sorted({(tuple(sorted(u[:units_per_player])),
                           tuple(sorted(u[units_per_player:])))
                          for u in u_list})  # removing duplicates and sorting
-        self.start_states = [State({p: 0 for p in positions}, u[0], u[1])
-                             for u in u_list]
+        self.start_states = [
+            State({p: 0
+                   for p in positions}, u[0], u[1]) for u in u_list
+        ]
 
     def get_moves(self, state):
         """Lists all moves '(unitToMove, destination)'. Does NOT check if state is terminal."""
@@ -216,27 +215,29 @@ class Environment():
         new_u_p = state.units_player.copy()
         new_u_p.remove(unit)
         new_u_p.append(dest)
-        new_brd = {pos: state.board[pos] + int(pos == build)
-                   for pos in self.neighbours}
+        new_brd = {
+            pos: state.board[pos] + int(pos == build)
+            for pos in self.neighbours
+        }
         return State(new_brd, state.units_opponent, new_u_p)
 
     def get_children(self, parent):
         """Returns the set list of legal children of the parent state."""
-        return {self.do_play(pos, parent)
-                       for pos in self.get_plays(parent)}
+        return {self.do_play(pos, parent) for pos in self.get_plays(parent)}
 
     def equiv_class(self, state):
         """Returns symmetrically equivalent states. May contain duplicates."""
-
         def hor(pos):
             return (self.dimension - 1 - pos[0], pos[1])
 
         def diag(pos):
             return (pos[1], pos[0])
-        trafos = [diag, lambda p: hor(diag(p)), lambda p: diag(hor(diag(p))),
-                  lambda p: hor(diag(hor(diag(p)))),
-                  hor, lambda p: diag(hor(p)), lambda p: hor(diag(hor(p))),
-                  lambda p: p]
+
+        trafos = [
+            diag, lambda p: hor(diag(p)), lambda p: diag(hor(diag(p))),
+            lambda p: hor(diag(hor(diag(p)))), hor, lambda p: diag(hor(p)),
+            lambda p: hor(diag(hor(p))), lambda p: p
+        ]
 
         def transform_by(trafo):
             new_brd = {trafo(p): state.board[p] for p in self.neighbours}
@@ -252,14 +253,14 @@ class Environment():
         Note: If turn is unspecified (None, the default) or if it chosen
         higher than maxTurns, it is set to be at random in [0, maxTurns/2].
         """
-        max_turns = 1+4*(self.dimension**2 - self.units_per_player)
+        max_turns = 1 + 4 * (self.dimension**2 - self.units_per_player)
         if turn is None or turn >= max_turns:
-            turn = randint(0, int(max_turns/2))
+            turn = randint(0, int(max_turns / 2))
         u_p, u_o = [], []
-        for rep in range(0, 2*self.units_per_player):
+        for rep in range(0, 2 * self.units_per_player):
             while True:
-                pos = (randint(0, self.dimension-1),
-                       randint(0, self.dimension-1))
+                pos = (randint(0, self.dimension - 1),
+                       randint(0, self.dimension - 1))
                 if pos not in u_p + u_o:
                     break
             if rep < self.units_per_player:
@@ -269,8 +270,9 @@ class Environment():
         filling = 0
         board = {pos: 0 for pos in self.neighbours}
         while filling < turn:
-            pos = (randint(0, self.dimension-1), randint(0, self.dimension-1))
-            if board[pos] < 4 - 2*int(pos in u_p+u_o):
+            pos = (randint(0,
+                           self.dimension - 1), randint(0, self.dimension - 1))
+            if board[pos] < 4 - 2 * int(pos in u_p + u_o):
                 board[pos] += 1
                 filling += 1
         return State(board, u_p, u_o)
@@ -301,7 +303,7 @@ class Environment():
             if 3 in [move.board[p] for p in move.units_player]:
                 return True
         for child in self.get_children(state):
-            if self.lose_in(k-1, child):
+            if self.lose_in(k - 1, child):
                 return True
         return False
 
@@ -335,7 +337,7 @@ class Environment():
         # compute a heightscore of the units
         value = sum([state.board[u] for u in state.units_player])
         value -= sum([state.board[u] for u in state.units_opponent])
-        value /= (1 + 2*state.units_opponent.__len__())  # normalize
+        value /= (1 + 2 * state.units_opponent.__len__())  # normalize
 
         return value
 
@@ -350,7 +352,6 @@ class Player:
         info (str)
         env (Environment)
     """
-
     def __init__(self, environment, info='random play'):
         self.info = info
         self.env = environment
@@ -362,7 +363,6 @@ class Player:
 
 class HumanViaConsole(Player):
     """A human that plays via the console."""
-
     def __init__(self, environment, info='human'):
         Player.__init__(self, environment=environment, info=info)
 
@@ -384,7 +384,8 @@ class HumanViaConsole(Player):
         dest = self.input_pos(destinations)
 
         build_positions = [
-            b for (u, d, b) in valid_plays if u == unit and d == dest]
+            b for (u, d, b) in valid_plays if u == unit and d == dest
+        ]
         print('Choose where to build from', build_positions, '...')
         build = self.input_pos(build_positions)
         return (unit, dest, build)
@@ -429,7 +430,6 @@ class Game:
     Methods:
         save(path)
     """
-
     def __init__(self, players, environment, start_state=None, verbose=False):
         """Plays a game between players.
 
@@ -470,9 +470,9 @@ class Game:
 
             score = environment.score(currentstate)
             if score != 0:
-                self.playtime = round(time()-time0, 3)
-                if ((score == 1 and active == 0) or
-                        (score == -1 and active == 1)):
+                self.playtime = round(time() - time0, 3)
+                if ((score == 1 and active == 0)
+                        or (score == -1 and active == 1)):
                     self.result = 1
                 else:
                     self.result = 2
@@ -491,23 +491,26 @@ class Game:
         if form == 'text':
             with open(path, 'a', newline=None) as file:
                 file.write('\n')
-                file.write('1st player:  '+self.players[0].info+'\n')
-                file.write('2nd player:  '+self.players[1].info+'\n')
-                file.write('winner:      '+str(self.result)+'\n')
-                file.write('start state: '+self.start_state.string()+'\n')
+                file.write('1st player:  ' + self.players[0].info + '\n')
+                file.write('2nd player:  ' + self.players[1].info + '\n')
+                file.write('winner:      ' + str(self.result) + '\n')
+                file.write('start state: ' + self.start_state.string() + '\n')
                 plays_str = ''.join(str(P)
                                     for P in self.plays).replace(')(', '|')
-                plays_str = plays_str.replace(',', '').replace(
-                    ')', '').replace('(', '').replace(' ', '')
-                file.write('plays:       '+plays_str+'\n')
-                file.write('playtime:    '+str(self.playtime)+' s\n')
+                plays_str = plays_str.replace(',',
+                                              '').replace(')', '').replace(
+                                                  '(', '').replace(' ', '')
+                file.write('plays:       ' + plays_str + '\n')
+                file.write('playtime:    ' + str(self.playtime) + ' s\n')
         elif form == 'json':
-            entry = {'1st player': self.players[0].info,
-                     '2nd player': self.players[1].info,
-                     'winner': self.result,
-                     'start state': self.start_state.string(),
-                     'plays': self.plays,
-                     'playtime': self.playtime}
+            entry = {
+                '1st player': self.players[0].info,
+                '2nd player': self.players[1].info,
+                'winner': self.result,
+                'start state': self.start_state.string(),
+                'plays': self.plays,
+                'playtime': self.playtime
+            }
             if isfile(path):
                 with open(path, 'r', encoding='utf-8', newline=None) as file:
                     json_dict = json.load(file)
@@ -533,92 +536,102 @@ class SanGraph(gamegraph.GameGraph):
     Methods:
         add_children, print_subtree, to_json, from_json, save, load,
     """
-
-    def __init__(self, 
-        env : Environment, 
-        childrentable = None, 
-        roots = None, 
-        description=None):
+    def __init__(self,
+                 env: Environment,
+                 childrentable=None,
+                 roots=None,
+                 description=None):
 
         if description is None:
             description = 'GameGraph for Santorini, dim: '+str(env.dimension) +\
-                   ', units/player:'+str(env.units_per_player)        
+                   ', units/player:'+str(env.units_per_player)
         if roots is None:
             if childrentable is not None:
-                raise Exception("SanGraph called with no roots but a childrentable")
-            roots = tuple([s.string() for s in env.start_states])        
+                raise Exception(
+                    "SanGraph called with no roots but a childrentable")
+            roots = tuple([s.string() for s in env.start_states])
         if childrentable is None:
-            childrentable = {r : None  for r in roots}
-        
+            childrentable = {r: None for r in roots}
+
         try:
             outdegree_max = {
-                (3,1) : 27,
-                (3,2) : 28,
-                (4,1) : 46,
-                (4,2) : 66,
-                (5,1) : 63,
-                (5,2) : 100}[(env.dimension, env.units_per_player)]
+                (3, 1): 27,
+                (3, 2): 28,
+                (4, 1): 46,
+                (4, 2): 66,
+                (5, 1): 63,
+                (5, 2): 100
+            }[(env.dimension, env.units_per_player)]
         except KeyError:
-            raise Exception(f"Failed to generate graph - maximal outdegree unknown for dimension {env.dimension} and {env.units_per_player} units per player")
+            raise Exception(
+                f"Failed to generate graph - maximal outdegree unknown for dimension {env.dimension} and {env.units_per_player} units per player"
+            )
 
-        super().__init__(
-            childrentable=childrentable, 
-            roots=roots, 
-            description=description, 
-            outdegree_max=outdegree_max)
+        super().__init__(childrentable=childrentable,
+                         roots=roots,
+                         description=description,
+                         outdegree_max=outdegree_max)
         self.env = env
 
-    
     @classmethod
     def from_json(cls, string) -> 'GameGraph':
-        """Inverse of 'as_json'. Restores tuples if they have been serialized as separate object."""      
-        def decode(dct): 
+        """Inverse of 'as_json'. Restores tuples if they have been serialized as separate object."""
+        def decode(dct):
             if f"__{cls.__name__}__" in dct:
                 content = GameGraph.SerializationTools.tuplify(dict(dct))
-                return SanGraph(
-                    Environment(dimension = content["env"]["dimension"], 
-                                units_per_player = content["env"]["units_per_player"]),
-                    childrentable=content["_childrentable"],
-                    description=content["description"],
-                    roots=content["roots"])
+                return SanGraph(Environment(
+                    dimension=content["env"]["dimension"],
+                    units_per_player=content["env"]["units_per_player"]),
+                                childrentable=content["_childrentable"],
+                                description=content["description"],
+                                roots=content["roots"])
             return dct
+
         return json.loads(string, object_hook=decode)
 
-    def as_json(self, indent=2, hint_tuples = True):
+    def as_json(self, indent=2, hint_tuples=True):
         """Serializes the graph to JSON. If hint_tuples is true, tuples will be serialized as separate object."""
-        class TupleHintingEncoder(json.JSONEncoder):   
+        class TupleHintingEncoder(json.JSONEncoder):
             def default(self, obj):
                 if isinstance(obj, Environment):
-                    return {f"__EnvironmentData__": True,
-                            "dimension": obj.dimension,
-                            "units_per_player":obj.units_per_player}                
+                    return {
+                        f"__EnvironmentData__": True,
+                        "dimension": obj.dimension,
+                        "units_per_player": obj.units_per_player
+                    }
                 if isinstance(obj, GameGraph):
                     content = {f"__{obj.__class__.__name__}__": True}
                     content.update(obj.__dict__)
                     if hint_tuples:
-                        return GameGraph.SerializationTools.hint_tuples(content)
+                        return GameGraph.SerializationTools.hint_tuples(
+                            content)
                     else:
                         return content
                 return json.JSONEncoder.default(self, obj)
+
         return json.dumps(self, cls=TupleHintingEncoder, indent=indent)
-    
+
     def deepcopy(self):
         """Lazy / ineffecient deepcopy function - we just serialize to JSON and desserialize"""
         return SanGraph.from_json(self.as_json())
 
     def expand_at(self, vertex):
-        if self.open_at(vertex):          
-            self._childrentable[vertex] = tuple(sorted([c.string()
-                for c in self.env.get_children(State.from_string(vertex))]))
+        if self.open_at(vertex):
+            self._childrentable[vertex] = tuple(
+                sorted([
+                    c.string()
+                    for c in self.env.get_children(State.from_string(vertex))
+                ]))
             for c in self._childrentable[vertex]:
-                if c not in self._childrentable.keys():    
+                if c not in self._childrentable.keys():
                     self._childrentable[c] = None
         else:
-            raise gamegraph.VertexNotOpen("{}.expand_at called on non-open vertex {}".format(
-                                        self.__class__, vertex))
+            raise gamegraph.VertexNotOpen(
+                "{}.expand_at called on non-open vertex {}".format(
+                    self.__class__, vertex))
 
     def score_at(self, vertex):
-        return float(self.env.score(State.from_string(vertex)))         
+        return float(self.env.score(State.from_string(vertex)))
 
     def numpify(self, vertex):
         """Returns a numpy-array (dim=1 and length= board_dim** + 2*units_per_player)"""
@@ -631,24 +644,27 @@ class SanGraph(gamegraph.GameGraph):
             temp.append(unit[0])
             temp.append(unit[1])
         return numpy.array(temp)
-       
 
     def unnumpify(self, np_array):
         """Returns a vertex, inverse of numpify. Needs the board_dim."""
         board, dim = {}, self.env.dimension
-        units_pp = int((len(np_array) - dim*dim)/2)
+        units_pp = int((len(np_array) - dim * dim) / 2)
         for row in range(0, dim):
             for col in range(0, dim):
-                board[(row, col)] = np_array[row*dim + col]
-        units_player = [(np_array[i], np_array[i+1])
-                        for i in range(dim*dim, dim*dim+units_pp, 2)]
-        units_opponent = [(np_array[i], np_array[i+1])
-                          for i in range(dim*dim+units_pp, dim*dim+2*units_pp, 2)]
+                board[(row, col)] = np_array[row * dim + col]
+        units_player = [(np_array[i], np_array[i + 1])
+                        for i in range(dim * dim, dim * dim + units_pp, 2)]
+        units_opponent = [
+            (np_array[i], np_array[i + 1])
+            for i in range(dim * dim + units_pp, dim * dim + 2 * units_pp, 2)
+        ]
         return State(board, units_player, units_opponent).string()
 
-    def equivalenceclass_of(self, vertex):            
-        return {s.string() for s in self.env.equiv_class(State.from_string(vertex))}
+    def equivalenceclass_of(self, vertex):
+        return {
+            s.string()
+            for s in self.env.equiv_class(State.from_string(vertex))
+        }
 
     def representative_of(self, vertex):
         return sorted(list(self.equivalenceclass_of(vertex)))[0]
-

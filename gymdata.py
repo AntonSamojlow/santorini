@@ -27,6 +27,7 @@ class JSONSerializableDataClass():
                     content.pop(subclass.__name__)
                     return subclass(*content.values())
             return dct
+
         return json.loads(string, object_hook=decode)
 
     class DataClassEncoder(json.JSONEncoder):
