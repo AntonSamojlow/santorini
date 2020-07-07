@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import logging.handlers
 import multiprocessing
@@ -245,23 +246,28 @@ class Selfplayer(multiprocessing.Process):
             self.modeliteration = currentmodeliteration
             self._dump_cached_records()
         while len(self._gamelogs) >= self.config.gamelog_dump_threshold:
-            self._dump_cached_records(
-                batchsize=self.config.gamelog_dump_threshold)
+            self._dump_cached_records()
 
-    def _dump_cached_records(self, batchsize=None):
+    def _dump_cached_records(self):
         if len(self._gamelogs) < 1:
             self.logger.warning("nothing to dump")
             return
-        if batchsize == None:
-            batchsize = len(self._gamelogs)
-        else:
-            batchsize = min(len(self._gamelogs), batchsize)
-
+        
+        batchsize = len(self._gamelogs)
         self.logger.info(
             f"storing cached batch of {batchsize} gamelogs to disk")
 
-        for entry in [self._gamelogs.popleft() for _ in range(batchsize)]:
-            modeliteration, timestamp, records = entry
+        # reorganize data - grouping by iteration
+        dumpthis = [self._gamelogs.popleft() for _ in range(batchsize)]
+        iterations = set(entry[0] for entry in dumpthis)
+        dumpdata_byiteration = {it : [[],[]] for it in iterations}
+        for iteration, timestamp, records in dumpthis:
+            dumpdata_byiteration[iteration][0]+=timestamp
+            dumpdata_byiteration[iteration][1]+=records
+
+        for modeliteration, data in dumpdata_byiteration.items():
+            timestamp = max(data[0])
+            records = data[1]            
             if len(records) < 2:
                 self.logger.warning(
                     "skipping gamelog with less than 2 entries")
