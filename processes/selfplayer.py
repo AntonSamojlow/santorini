@@ -240,8 +240,7 @@ class Selfplayer(multiprocessing.Process):
             currentmodeliteration = gymdata.ModelInfo.from_json(
                 f.read()).iterationNr
         self._gamelogs.append(
-            (currentmodeliteration, datetime.now().strftime("%Y-%m-%dT%H%M%S"),
-             gamelog))
+            (currentmodeliteration, datetime.now(), gamelog))
         if currentmodeliteration > self.modeliteration:
             self.modeliteration = currentmodeliteration
             self._dump_cached_records()
@@ -261,20 +260,19 @@ class Selfplayer(multiprocessing.Process):
         dumpthis = [self._gamelogs.popleft() for _ in range(batchsize)]
         iterations = set(entry[0] for entry in dumpthis)
         dumpdata_byiteration = {it : [[],[]] for it in iterations}
-        for iteration, timestamp, records in dumpthis:
-            dumpdata_byiteration[iteration][0]+=timestamp
+        for iteration, cachetime, records in dumpthis:
+            dumpdata_byiteration[iteration][0]+=[cachetime]
             dumpdata_byiteration[iteration][1]+=records
 
         for modeliteration, data in dumpdata_byiteration.items():
-            timestamp = max(data[0])
+            timestamp = max(data[0]).strftime("%Y-%m-%dT%H%M%S")
             records = data[1]            
             if len(records) < 2:
                 self.logger.warning(
                     "skipping gamelog with less than 2 entries")
                 return
 
-            folderpath = "{}/{}".format(self.gympath.gamerecordpool_folder,
-                                        modeliteration)
+            folderpath = f"{self.gympath.gamerecordpool_folder}/{modeliteration}"
             try:
                 if not os.path.exists(folderpath):
                     os.makedirs(folderpath)
