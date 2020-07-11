@@ -651,11 +651,11 @@ class SanGraph(gamegraph.GameGraph):
         units_pp = int((len(np_array) - dim * dim) / 2)
         for row in range(0, dim):
             for col in range(0, dim):
-                board[(row, col)] = np_array[row * dim + col]
-        units_player = [(np_array[i], np_array[i + 1])
+                board[(row, col)] = int(np_array[row * dim + col])
+        units_player = [(int(np_array[i]), int(np_array[i + 1]))
                         for i in range(dim * dim, dim * dim + units_pp, 2)]
         units_opponent = [
-            (np_array[i], np_array[i + 1])
+            (int(np_array[i]), int(np_array[i + 1]))
             for i in range(dim * dim + units_pp, dim * dim + 2 * units_pp, 2)
         ]
         return State(board, units_player, units_opponent).string()
