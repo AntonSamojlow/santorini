@@ -72,8 +72,10 @@ class State():
     def string(self):
         """Returns a string of the form '0000|0110|0011'"""
         brd, u_p, u_o = '', '', ''
-        for pos in self.board.keys():
-            brd += str(self.board[pos])
+        dimension = int(sqrt(len(self.board)))
+        for row in range(0, dimension):
+            for col in range(0, dimension):
+                brd += str(self.board[(row, col)])
         for pos in self.units_player:
             u_p += str(pos[0]) + str(pos[1])
         for pos in self.units_opponent:
@@ -84,8 +86,8 @@ class State():
     def from_string(cls, string):
         """Returns a State, inverse of State.string()"""
         [brd, u_p, u_o] = string.split('|')
-        dimension = int(sqrt(brd.__len__()))
-        units_per_player = int(u_p.__len__() / 2)
+        dimension = int(sqrt(len(brd)))
+        units_per_player = int(len(u_p) / 2)
         board, units_player, units_opponent = {}, [], []
         for row in range(0, dimension):
             for col in range(0, dimension):

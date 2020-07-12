@@ -25,12 +25,19 @@ class DenseModel():
                  name=None,
                  compile=True,
                  optimizer=tf.keras.optimizers.Adam(0.001),
-                 hiddenactivation='swish',
+                 activation='swish',
                  dropout_rate=0.1,
                  L1reg_weight=0,
                  L2reg_weight=0):
         self.name = name
         self.layer_sizes = layer_sizes
+
+        try:
+            lr = float(optimizer.learning_rate)
+        except:
+            lr = float(0)
+        self.parameterstring = f"{activation}_{optimizer.__class__.__name__}({lr:.2E})_DR={dropout_rate}_L1W={L1reg_weight}_L2W={L2reg_weight}"
+
         # generate tf.keras model
         layers = [tf.keras.Input(shape=(layer_sizes[0], ))]
         for layer_size in layer_sizes[1:-1]:
@@ -40,7 +47,7 @@ class DenseModel():
                 layers.append(
                     tf.keras.layers.Dense(
                         layer_size,
-                        activation=hiddenactivation,
+                        activation=activation,
                         kernel_regularizer=tf.keras.regularizers.L1L2(
                             L1reg_weight, L2reg_weight))(layers[-1]))
                 layers.append(

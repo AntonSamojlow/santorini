@@ -48,7 +48,7 @@ class GameGraph(ABC):
     def __init__(self, description: str, outdegree_max: int, roots: tuple,
                  childrentable: dict):
         self.description = description
-        self.outdegree_max = outdegree_max
+        self.outdegree_max = outdegree_max # upper bound on the degree for outgoing edges for all vertices
         self.roots = roots
         self._childrentable = childrentable
 
