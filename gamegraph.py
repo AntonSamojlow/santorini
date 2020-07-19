@@ -92,7 +92,7 @@ class GameGraph(ABC):
         """Inverse of the method numpify, returntype is the type of a key in the childrentable"""
         raise NotImplementedError("Not implemented")
 
-    def deepcopy(self):
+    def deepcopy(self) -> 'GameGraph':
         """Returns a new copy of the graph with the same structure."""
         raise NotImplementedError("Not implemented")
 

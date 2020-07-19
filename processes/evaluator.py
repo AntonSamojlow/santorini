@@ -3,6 +3,7 @@ import logging
 import logging.handlers
 import multiprocessing
 import multiprocessing.queues as mpq
+from os import scandir
 import threading
 import queue
 import os
@@ -20,22 +21,22 @@ from namedqueues import NamedQueue
 from gamegraph import GameGraph
 
 
-class Selfplayer(multiprocessing.Process):
-    def __init__(self, name: str, config: gymdata.SelfPlayConfig,
+class Evaluator(multiprocessing.Process):
+    def __init__(self, name: str, config: gymdata.EvaluateConfig,
                  gympath: gymdata.GymPath, monitoring_q: mpq.Queue,
                  endevent: multiprocessing.Event, logging_q: mpq.Queue,
-                 predict_request_q: mpq.Queue, predict_response_q: mpq.Queue,
+                 predict_request_qs: 'list[mpq.Queue]', predict_response_q: mpq.Queue,
                  graph: GameGraph):
         super().__init__()
         graph.truncate_to_roots()
         self.name = name
-        self._mcts_graph = graph.deepcopy()
-        self._mcts_searchtable = dict()
+        self._mcts_graphs = [graph.deepcopy(), graph.deepcopy()]
+        self._mcts_searchtables = [dict(), dict()]
         self._mcts_current_expansions = set()
         self.config = config
         self.endevent = endevent
         self.logging_q = logging_q
-        self.predict_request_q = predict_request_q
+        self.predict_request_qs = predict_request_qs
         self.predict_response_q = predict_response_q
         self.gympath = gympath
         self.monitoring_q = monitoring_q
@@ -45,19 +46,15 @@ class Selfplayer(multiprocessing.Process):
             'select_wait': [],
             'predict_wait': []
         }
-        self._gamelogs = deque(())
-        self.modeliteration: int
-        with open(self.gympath.modelinfo_file) as f:
-            self.modeliteration = gymdata.ModelInfo.from_json(
-                f.read()).iterationNr
+        self.scores: 'list[int]' = []
 
     @property
-    def mcts_graph(self):
-        return self._mcts_graph
+    def mcts_graphs(self):
+        return self._mcts_graphs
 
     @property
-    def mcts_searchtable(self):
-        return self._mcts_searchtable
+    def mcts_searchtables(self):
+        return self._mcts_searchtables
 
     @property
     def mcts_current_expansions(self):
@@ -69,7 +66,7 @@ class Selfplayer(multiprocessing.Process):
         self.logger.setLevel(self.config.logging.loglevel)
         logfilepath = os.path.join(
             self.gympath.log_folder,
-            "{}[{}].log".format(type(self).__name__, self.pid))
+            "{}[{}].log".format(self.name, self.pid))
         rfh = self.config.logging.getRotatingFileHandler(logfilepath)
         qh = logging.handlers.QueueHandler(self.logging_q)
         qh.setLevel(logging.INFO)
@@ -95,10 +92,10 @@ class Selfplayer(multiprocessing.Process):
                 thread_prediction_lock = threading.Lock()
                 thread_predict_response_q = NamedQueue("")
                 thread = threading.Thread(target=self._MCTS_worker,
-                                          args=(
-                                              thread_prediction_lock,
-                                              thread_predict_response_q,
-                                          ))
+                                            args=(
+                                                thread_prediction_lock,
+                                                thread_predict_response_q,
+                                            ))
                 thread.start()
                 while thread.native_id is None:  # wait until thread has started
                     sleep(0.1)
@@ -114,13 +111,19 @@ class Selfplayer(multiprocessing.Process):
             queues += list(self.thread_predict_response_qs.values())
 
             t0_statssignal = 0
+            starting_player = 0
             while not self.endevent.is_set():
                 if time() - t0_statssignal > self.config.freq_statssignal:
                     t0_statssignal = time()
                     self._sendstats()
-                gamelog = self._selfplay()
-                self._cache_records(gamelog)
-                self.logger.debug("cached {} new records".format(len(gamelog)))
+                result = self._pit(starting_player=starting_player)
+                # store score from model1-perspective and alternate starting player  
+                self.scores += [ (1-2*starting_player)*result]
+                starting_player = (starting_player+1)%2
+
+
+            self.logger.info(f"total score: {sum(self.scores)} out of {len(self.scores)} games")
+            
 
             self.terminateevent.set()
             # unlock threads still waiting for predictions and insert fake prediction
@@ -135,11 +138,7 @@ class Selfplayer(multiprocessing.Process):
                             "failed to release predict_lock for thread {}".
                             format(t.native_id))
                         pass
-
-            self.logger.debug("writing playrecords to file...")
-            self._dump_cached_records()
-            self.logger.debug("...done")
-
+            
             for t in self.search_threads:
                 t.join(5)
                 if t.is_alive():
@@ -172,7 +171,8 @@ class Selfplayer(multiprocessing.Process):
             'select_wait_sum': sum(self.debug_stats['select_wait']),
             'select_wait_count': len(self.debug_stats['select_wait']),
             'predict_wait_sum': sum(self.debug_stats['predict_wait']),
-            'predict_wait_count': len(self.debug_stats['predict_wait'])
+            'predict_wait_count': len(self.debug_stats['predict_wait']),
+            'win_perc_model1' : float(1/2 + sum(self.scores)/(2*len(self.scores))) if len(self.scores)>0 else 0
         }
         data = (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 f"{__name__}[{self.pid}]",
@@ -182,35 +182,58 @@ class Selfplayer(multiprocessing.Process):
         self.debug_stats['select_wait'].clear()
         self.debug_stats['searches'] = 0
 
-    def _selfplay(self) -> list:
-        self.mcts_graph.truncate_to_roots()
-        vertex = choice(tuple(self.mcts_graph.roots))
-        self.mcts_searchtable.clear()
+    def _pit(self, starting_player:int = 0) -> int:
+        for graph in self._mcts_graphs:
+            graph.truncate_to_roots()
+       
+        vertex = choice(tuple(self.mcts_graphs[0].roots))
+        current_player = starting_player
+
+        for table in self.mcts_searchtables:
+            table.clear()
         gamelog = []
-        while self.mcts_graph.open_at(
-                vertex
-        ) or not self.mcts_graph.terminal_at(vertex):  # play a game
-            self._MCTSrun(vertex)
+
+        while True:  # play a game
+            # self.logger.debug(f"self.mcts_graphs[current_player].open_at(vertex)={self.mcts_graphs[current_player].open_at(vertex)}")
+            # if not (self.mcts_graphs[current_player].open_at(vertex)):
+            #     self.logger.debug(f"self.mcts_graphs[current_player].terminal_at(vertex)={self.mcts_graphs[current_player].terminal_at(vertex)}")
+            
+            self._MCTSrun(current_player, vertex)
             if self.endevent.is_set():
                 self.logger.debug("endevent received - cancelling selfplay")
-                return []
-            N_sum = len(self.mcts_searchtable[vertex]['N'])
+                return 0
+            N_sum = sum(self.mcts_searchtables[current_player][vertex]['N'])
             prob_distr = [
                 (N/N_sum)**(1 / self.config.temperature)
-                for N in self.mcts_searchtable[vertex]['N']
+                for N in self.mcts_searchtables[current_player][vertex]['N']
             ]
             gamelog.append([vertex, prob_distr, None])
-            vertex = choices(self.mcts_graph.children_at(vertex),
+            vertex = choices(self.mcts_graphs[current_player].children_at(vertex),
                              weights=prob_distr)[0]
-        for i in range(0, len(gamelog)):  # propagate the result
-            sign = 1 - 2 * int(i % 2 == len(gamelog) % 2)
-            gamelog[i][2] = sign * self.mcts_graph.score_at(vertex)
-        return gamelog
 
-    def _MCTSrun(self, vertex):
+            game_finished = (not self.mcts_graphs[current_player].open_at(vertex)) and (
+                self.mcts_graphs[current_player].terminal_at(vertex))
+
+            current_player = (current_player + 1)%2
+            # TODO: Add proper method to gamegraph for adding open nodes
+            if vertex not in self.mcts_graphs[current_player]._childrentable:
+                self.mcts_graphs[current_player]._childrentable[vertex] = None
+
+            if game_finished:
+                break
+            
+            
+
+        score = self.mcts_graphs[current_player].score_at(vertex)
+        startingplayerscore = score*(-1 + 2*int(starting_player == current_player)) 
+        self.logger.debug(f"player #{current_player} scores {score}: {[e[0] for e in gamelog]}")
+        self.logger.debug(f"returning score {startingplayerscore} for player #{starting_player}")
+        return startingplayerscore
+
+    def _MCTSrun(self, player_nr:int, vertex):
         # self.logger.debug("MCTSrun called on vertex {}".format(vertex))
         for _ in range(0, self.config.searchcount):
-            self.mcts_request_q.put(vertex)
+            self.mcts_request_q.put((player_nr,vertex))
         replies = 0
         while replies < self.config.searchcount:
             if self.endevent.is_set():
@@ -232,88 +255,23 @@ class Selfplayer(multiprocessing.Process):
                 except queue.Empty:
                     pass
         self.logger.debug(
-            f"MCTS finished {self.config.searchcount} searches on {vertex} -> {self.mcts_searchtable[vertex]}"
+            f"MCTS finished {self.config.searchcount} searches (player #{player_nr}) on {vertex} -> {self.mcts_searchtables[player_nr][vertex]}"
         )
         return
-
-    def _cache_records(self, gamelog):
-        with open(self.gympath.modelinfo_file) as f:
-            currentmodeliteration = gymdata.ModelInfo.from_json(
-                f.read()).iterationNr
-        self._gamelogs.append(
-            (currentmodeliteration, datetime.now(), gamelog))
-        if currentmodeliteration > self.modeliteration:
-            self.modeliteration = currentmodeliteration
-            self._dump_cached_records()
-        while len(self._gamelogs) >= self.config.gamelog_dump_threshold:
-            self._dump_cached_records()
-
-    def _dump_cached_records(self):
-        if len(self._gamelogs) < 1:
-            self.logger.warning("nothing to dump")
-            return
-        
-        batchsize = len(self._gamelogs)
-        self.logger.info(
-            f"storing cached batch of {batchsize} gamelogs to disk")
-
-        # reorganize data - grouping by iteration
-        dumpthis = [self._gamelogs.popleft() for _ in range(batchsize)]
-        iterations = set(entry[0] for entry in dumpthis)
-        dumpdata_byiteration = {it : [[],[]] for it in iterations}
-        for iteration, cachetime, records in dumpthis:
-            dumpdata_byiteration[iteration][0]+=[cachetime]
-            dumpdata_byiteration[iteration][1]+=records
-
-        for modeliteration, data in dumpdata_byiteration.items():
-            timestamp = max(data[0]).strftime("%Y-%m-%dT%H%M%S")
-            records = data[1]            
-            if len(records) < 2:
-                self.logger.warning(
-                    "skipping gamelog with less than 2 entries")
-                return
-
-            folderpath = f"{self.gympath.gamerecordpool_folder}/{modeliteration}"
-            try:
-                if not os.path.exists(folderpath):
-                    os.makedirs(folderpath)
-            except FileExistsError:  #due to several simultaneous processes accessing
-                pass
-
-            x, val_vec, pi_vec = [], [], []
-            for turndata in records:
-                pi = turndata[1]
-                if pi is not None:  # filter out terminal states
-                    x += [self.mcts_graph.numpify(turndata[0])]
-                    val_vec += [float(turndata[2])]
-                    # regularize dimension of pi and normalize to a proper probability
-                    pi = [p / sum(pi) for p in pi]
-                    for _ in range(len(pi), self.mcts_graph.outdegree_max):
-                        pi.append(0)
-                    pi_vec += [pi]
-            np.savetxt(os.path.join(folderpath,
-                                    f'{timestamp}[{self.pid}].x.csv'),
-                       np.array(x),
-                       delimiter=',')
-            np.savetxt(os.path.join(folderpath,
-                                    f'{timestamp}[{self.pid}].y_val.csv'),
-                       np.array(val_vec),
-                       delimiter=',')
-            np.savetxt(os.path.join(folderpath,
-                                    f'{timestamp}[{self.pid}].y_pi.csv'),
-                       np.array(pi_vec),
-                       delimiter=',')
 
     def _MCTS_worker(self, prediction_lock: threading.Lock,
                      thread_response_q: queue.Queue):
         # logging setup
+        graph: GameGraph
+        table: dict
+        player_nr: int
         thread_id = threading.get_ident()
         logger = self.logger.getChild("Thread-{}".format(thread_id))
         logger.debug("started and initialized logger")
 
         def select(vertex):
             # logger.debug(f"select({vertex})")
-            if self.mcts_graph.open_at(vertex):
+            if graph.open_at(vertex):
                 with self.mcts_expansion_lock:
                     if not vertex in self.mcts_current_expansions:
                         self.mcts_current_expansions.add(vertex)
@@ -330,52 +288,52 @@ class Selfplayer(multiprocessing.Process):
                 self.debug_stats['select_wait'].append(time() - t0)
                 # logger.debug("exiting wait state for ({})".format(vertex))
 
-            if self.mcts_graph.terminal_at(vertex):
+            if graph.terminal_at(vertex):
                 # logger.debug("exiting select: {} is terminal".format(vertex))
                 return [vertex]
 
-            visits = self.mcts_searchtable[vertex]['N']
+            visits = table[vertex]['N']
 
             def U(child):
                 try:
-                    c_val = self.mcts_searchtable[child][
+                    c_val = table[child][
                         'Q'] + self.config.virtualloss * int(
                             child in self._mcts_current_expansions)
                 except KeyError:  # excpect error if child is open
                     c_val = (1 - 2 *
                              random()) / 1000  # adding noise for open children
-                j = self.mcts_graph.children_at(vertex).index(child)
-                prob = self.mcts_searchtable[vertex]['P'][j]
+                j = graph.children_at(vertex).index(child)
+                prob = table[vertex]['P'][j]
                 return c_val - self.config.exploration_const * prob * sqrt(
                     sum(visits)) / (1 + visits[j])
 
             return [vertex] + select(
-                min(self.mcts_graph.children_at(vertex), key=U))
+                min(graph.children_at(vertex), key=U))
 
         def expand(vertex) -> bool:
             # logger.debug("expand({})".format(vertex))
-            if self.mcts_graph.open_at(vertex):
+            if graph.open_at(vertex):
                 # block all other threads until graph has been expanded
                 with self.mcts_graph_lock:
                     # logger.debug("acquired graphlock for expanding at {}".format(vertex))
-                    self.mcts_graph.expand_at(vertex)
+                    graph.expand_at(vertex)
                     # logger.debug("expanded at {}".format(vertex))
 
                 # initialize table statistics
-                if self.mcts_graph.terminal_at(vertex):
+                if graph.terminal_at(vertex):
                     # logger.debug(f"graph.terminal_at({vertex})")
                     tableentry = {
                         'N': [],
-                        'Q': self.mcts_graph.score_at(vertex),
+                        'Q': graph.score_at(vertex),
                         'P': []
                     }
                 else:
                     # logger.debug(f"predicting: {vertex}")
                     t0 = time()
                     prediction_lock.acquire()
-                    self.predict_request_q.put(
+                    self.predict_request_qs[f"Predictor-{player_nr}"].put(
                         (self.name, thread_id,
-                         self.mcts_graph.numpify(vertex)))
+                         graph.numpify(vertex)))
                     with prediction_lock:  # waiting here for external proc/thread to release the lock...
                         # logger.debug("acquired prediction lock, reading from queue...")
                         prediction = thread_response_q.get()
@@ -384,34 +342,36 @@ class Selfplayer(multiprocessing.Process):
                     self.debug_stats['predict_wait'].append(time() - t0)
                     # logger.debug(f"prediction received for: {vertex}")
                     tableentry = {
-                        'N': [0 for c in self.mcts_graph.children_at(vertex)],
+                        'N': [0 for c in graph.children_at(vertex)],
                         'Q':
                         prediction[1],
                         'P':
                         prediction[0]
-                        [:len(self.mcts_graph.children_at(vertex))]
+                        [:len(graph.children_at(vertex))]
                     }
-                self.mcts_searchtable[vertex] = tableentry
+                table[vertex] = tableentry
                 self.mcts_current_expansions.remove(vertex)
             return True
 
         def update(path):
             # logger.debug("update({})".format(path))
             with self.mcts_table_lock:
-                end_val = self.mcts_searchtable[path[-1]]['Q']
+                end_val = table[path[-1]]['Q']
                 for i in range(0, len(path) - 1):
                     sign = 1 - 2 * int(i % 2 == path.__len__() % 2)
-                    j = self.mcts_graph.children_at(path[i]).index(path[i + 1])
-                    self.mcts_searchtable[path[i]]['N'][j] += 1
-                    self.mcts_searchtable[path[i]]['Q'] +=\
-                        (sign*end_val - self.mcts_searchtable[path[i]]['Q'])\
-                        /sum(self.mcts_searchtable[path[i]]['N'])
+                    j = graph.children_at(path[i]).index(path[i + 1])
+                    table[path[i]]['N'][j] += 1
+                    table[path[i]]['Q'] +=\
+                        (sign*end_val - table[path[i]]['Q'])\
+                        /sum(table[path[i]]['N'])
             # logger.debug("finished update({})".format(path))
             return
 
         while not self.terminateevent.is_set():
             try:
-                request = self.mcts_request_q.get(block=True, timeout=0.1)
+                player_nr, request = self.mcts_request_q.get(block=True, timeout=0.1)
+                graph = self.mcts_graphs[player_nr]
+                table = self.mcts_searchtables[player_nr]
                 path = select(request)
                 if expand(path[-1]):
                     update(path)

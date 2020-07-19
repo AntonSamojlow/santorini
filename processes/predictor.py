@@ -10,10 +10,16 @@ import gymdata
 
 
 class Predictor(multiprocessing.Process):
-    def __init__(self, config: gymdata.PredictConfig, gympath: gymdata.GymPath,
+    def __init__(self,
+                 config: gymdata.PredictConfig,
+                 gympath: gymdata.GymPath,
                  endevent: multiprocessing.Event,
-                 newmodelevent: multiprocessing.Event, logging_q: mpq.Queue,
-                 request_q: mpq.Queue, response_qs: dict):
+                 newmodelevent: multiprocessing.Event,
+                 logging_q: mpq.Queue,
+                 request_q: mpq.Queue,
+                 response_qs: dict,
+                 modelsavefolder_override: str = None,
+                 modelweightsfolder_override: str = None):
 
         super().__init__()
         self.logging_q = logging_q
@@ -24,13 +30,16 @@ class Predictor(multiprocessing.Process):
         self.config = config
         self.gympath = gympath
         self.debug_stats = {'predict_batches': []}
+        # two overrides for the evaluator - to be removed during refactoring:
+        self.modelsavefolder_override = modelsavefolder_override
+        self.modelweightsfolder_override = modelweightsfolder_override
 
     def run(self):
         # logging setup
-        self.logger = logging.getLogger(type(self).__name__)
+        self.logger = logging.getLogger(self.name)
         self.logger.setLevel(self.config.logging.loglevel)
         logfilepath = os.path.join(self.gympath.log_folder,
-                                   "{}.log".format(type(self).__name__))
+                                   "{}[{}].log".format(self.name, self.pid))
         rfh = self.config.logging.getRotatingFileHandler(logfilepath)
         qh = logging.handlers.QueueHandler(self.logging_q)
         qh.setLevel(logging.INFO)
@@ -71,26 +80,46 @@ class Predictor(multiprocessing.Process):
             MODEL: tf.keras.Model
             self.logger.info("using: {}".format(tf_device))
             with tf.device(tf_device):
-                MODEL = tf.keras.models.load_model(self.gympath.model_folder)
-                model_iteration: int
-                with open(self.gympath.modelinfo_file, 'r') as f:
-                    model_iteration = gymdata.ModelInfo.from_json(
-                        f.read()).iterationNr
-                self.logger.info(
-                    "tf.keras.model (iteration {}) loaded from {}, awaiting requests..."
-                    .format(model_iteration, self.gympath.model_folder))
+                if self.modelsavefolder_override is None:
+                    MODEL = tf.keras.models.load_model(
+                        self.gympath.model_folder)
+                    model_iteration: int
+                    with open(self.gympath.modelinfo_file, 'r') as f:
+                        model_iteration = gymdata.ModelInfo.from_json(
+                            f.read()).iterationNr
+                    self.logger.info(
+                        "tf.keras.model (iteration {}) loaded from {}, awaiting requests..."
+                        .format(model_iteration, self.gympath.model_folder))
+                else:
+                    MODEL = tf.keras.models.load_model(
+                        self.modelsavefolder_override)
+                    if self.modelweightsfolder_override is None:
+                        self.logger.info(
+                            f"tf.keras.model loaded from {self.modelsavefolder_override}, awaiting requests..."
+                        )
+                    else:
+                        MODEL.load_weights(self.modelweightsfolder_override)
+                        self.logger.info(
+                            f"tf.keras.model loaded from {self.modelsavefolder_override} with weights from {self.modelweightsfolder_override}, awaiting requests..."
+                        )
+
                 while not self.endevent.is_set():
                     if self.newmodelevent.is_set():
-                        MODEL = tf.keras.models.load_model(
-                            self.gympath.model_folder)
-                        with open(self.gympath.modelinfo_file) as f:
-                            model_iteration = gymdata.ModelInfo.from_json(
-                                f.read()).iterationNr
-                        self.newmodelevent.clear()
-                        self.logger.info(
-                            "tf.keras.model (iteration {}) reloaded from {}, awaiting requests..."
-                            .format(model_iteration,
-                                    self.gympath.model_folder))
+                        if self.modelsavefolder_override is None:
+                            MODEL = tf.keras.models.load_model(
+                                self.gympath.model_folder)
+                            with open(self.gympath.modelinfo_file) as f:
+                                model_iteration = gymdata.ModelInfo.from_json(
+                                    f.read()).iterationNr
+                            self.newmodelevent.clear()
+                            self.logger.info(
+                                "tf.keras.model (iteration {}) reloaded from {}, awaiting requests..."
+                                .format(model_iteration,
+                                        self.gympath.model_folder))
+                        else:
+                            self.logger.error(
+                                "changing models is not supported for the evaluator"
+                            )
 
                     requests = []
                     try:
@@ -109,14 +138,14 @@ class Predictor(multiprocessing.Process):
                             len(x), x))
                         predictions = MODEL.predict_on_batch(x)
                         for i in range(len(requests)):
-                            requester_selfplayername = requests[i][0]
+                            requester_process_name = requests[i][0]
                             requester_thread_id = requests[i][1]
                             prediction = [
                                 np.array([predictions[0][i]]),
                                 np.array([predictions[1][i]])
                             ]
                             # self.logger.debug("returning {} from requester {} to outputq".format(prediction, requesterid))
-                            self.response_qs[requester_selfplayername].put(
+                            self.response_qs[requester_process_name].put(
                                 [requester_thread_id, prediction])
 
                 if len(self.debug_stats['predict_batches']) > 0:

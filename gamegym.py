@@ -36,6 +36,8 @@ from gamegraph import GameGraph
 from processes.trainer import Trainer
 from processes.predictor import Predictor
 from processes.selfplayer import Selfplayer
+from processes.evaluator import Evaluator
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -140,6 +142,173 @@ class GameGym():
     def path(self):
         return self._path
 
+    def evaluate(self, evalconfig: gymdata.EvaluateConfig, runtime_in_sec=None):
+        """Pits two models against each other."""
+        # try:
+        # ----------------------------------------------------------------------
+        # 1. Start - initialize ressources
+        # ----------------------------------------------------------------------
+
+        # events
+        endevent = multiprocessing.Event()
+        newmodelevent = multiprocessing.Event()
+        events = [endevent, newmodelevent]
+
+        # queues
+        logging_q = NamedMultiProcessingQueue("logging_q")
+        monitoring_q = NamedMultiProcessingQueue("monitoring_q")
+        predict_request_qs = {
+            f"Predictor-{i}": NamedMultiProcessingQueue(
+                f"Predictor-{i} predict_response_q")
+            for i in range(2)}
+        predict_response_qs = {
+            f"Evaluator-{i}": NamedMultiProcessingQueue(
+                f"Evaluator-{i} predict_response_q")
+            for i in range(evalconfig.playconfig.selfplayprocesses)}
+        queues = [logging_q, monitoring_q] + list(
+                predict_response_qs.values()) + list(
+                predict_request_qs.values())
+
+        # threads - configuration and start
+        logging_thread = threading.Thread(
+            target=self.__class__._centrallogger_worker,
+            args=(logging_q, ),
+            daemon=
+            True,  # note: also execpts 'TER' signal for a regular shutdown
+            name="logging")
+        inputreader_thread = threading.Thread(
+            target=self.__class__._inputreader_worker,
+            daemon=
+            True,  # note: due to input() blocking, there is no end signaling for this thread
+            args=(endevent, ),
+            name="inputreader")
+        monitoring_thread = threading.Thread(
+            target=self._monitoring_worker,
+            daemon=
+            True,  # note: also execpts 'TER' signal for a regular shutdown
+            args=(monitoring_q, ),
+            name="monitoring")
+        threads = [logging_thread, inputreader_thread, monitoring_thread]
+
+        # processes - configuration          
+        predictor_procs = [Predictor(self.config.predict, self.path,
+                                    endevent, newmodelevent, logging_q,
+                                    list(predict_request_qs.values())[0] , predict_response_qs,
+                                    evalconfig.model1_savefolderpath,
+                                    evalconfig.model1_weightsfolderpath),
+                            Predictor(self.config.predict, self.path,
+                                    endevent, newmodelevent, logging_q,
+                                    list(predict_request_qs.values())[1] , predict_response_qs,
+                                    evalconfig.model2_savefolderpath,
+                                    evalconfig.model2_weightsfolderpath)]
+                        
+        evaluater_procs = [
+            Evaluator(evaluatername, evalconfig.playconfig, self.path,
+                        monitoring_q, endevent, logging_q,
+                        predict_request_qs,
+                        predict_response_qs[evaluatername], self.graph)
+            for evaluatername in predict_response_qs]
+        processes = predictor_procs + evaluater_procs
+
+        # cleanup of defined ressources
+        def cleanup():
+            LOGGER.info(
+                "endevent was set - starting cleanup of ressources")
+            logging_q.put('TER')
+            monitoring_q.put('TER')
+
+            for p in processes:
+                p.join(10)
+                if p.is_alive():
+                    LOGGER.warning(
+                        "process {} has not ended - using terminate".
+                        format(p.name))
+                    p.terminate()
+                else:
+                    LOGGER.debug("process {} has ended".format(p.name))
+
+            for t in threads:
+                if t.isDaemon() and t.is_alive():
+                    LOGGER.debug(
+                        "thread {} is deamonic and alive - skipping join".
+                        format(t.name))
+                else:
+                    t.join(5)
+                    if t.is_alive():
+                        LOGGER.warning("thread {} has not ended".format(
+                            t.name))
+                    else:
+                        LOGGER.debug("thread {} has ended".format(t.name))
+
+            for q in queues:
+                if not q.empty():
+                    LOGGER.debug("{} items on queue {} - emptying".format(
+                        q.qsize(), q.name))
+                    while not q.empty():
+                        q.get()
+                if isinstance(q, mpq.Queue):
+                    q.close()
+                    q.join_thread()
+                    LOGGER.debug("queue {} joined".format(q.name))
+            LOGGER.info("cleanup finished, process ending")
+
+        # ----------------------------------------------------------------------
+        # 2. Run - start threads, process and handle until endevent
+        # ----------------------------------------------------------------------
+        # start threads
+        LOGGER.debug("starting threads")
+        for t in threads:
+            LOGGER.debug("starting {} ...".format(t.name))
+            t.start()
+            while not t.is_alive():
+                sleep(0.1)
+            LOGGER.debug("{} is alive".format(t.name))
+
+        # start processes
+        LOGGER.debug("starting processes")
+        for p in processes:
+            p.start()
+
+        LOGGER.info("idling until endevent is signaled...")
+        t0_livesignal = 0
+        t0_start = time()
+        while not endevent.is_set():
+            if time() - t0_livesignal > self.config.freq_livesignal:
+                t0_livesignal = time()
+                data = (
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    __name__, gymdata.MonitoringLabel.LIVESIGNAL,
+                    {p.name: p.is_alive()
+                        for p in processes})
+                monitoring_q.put(data)
+                for p in evaluater_procs:
+                    LOGGER.info(f"scores{p.name}={p.scores}")
+           
+            sleep(1)
+            
+            if runtime_in_sec != None: # check in case the run time has been limited
+                if time() - t0_start > runtime_in_sec:
+                    endevent.set()
+        # ----------------------------------------------------------------------
+        # 3. Endphase - cleaning up ressources
+        # ----------------------------------------------------------------------
+
+        cleanup()
+        return
+        # except Exception as exc:
+        #     LOGGER.error("exception: {}".format(exc))
+        #     LOGGER.info("signaling endevent and attempting cleanup")
+        #     try:
+        #         endevent.set()
+        #         cleanup()
+        #         return
+        #     except Exception as finalexc:
+        #         LOGGER.error("exception: {}".format(finalexc))
+        #         LOGGER.error("terminating without cleanup")
+        #         LOGGER.error(
+        #             "some threads or processes might still be running")
+        # return None
+
     def resume(self, runtime_in_sec=None):
         """Resumes the reinforcement learning training loop based with the current configuration."""
         try:
@@ -157,10 +326,9 @@ class GameGym():
             predict_request_q = NamedMultiProcessingQueue("predict_request_q")
             monitoring_q = NamedMultiProcessingQueue("monitoring_q")
             predict_response_qs = {
-                "Selfplayer-{}".format(i): NamedMultiProcessingQueue(
-                    "Selfplayer-{} predict_response_q".format(i))
-                for i in range(self.config.selfplay.selfplayprocesses)
-            }
+                f"Selfplayer-{i}": NamedMultiProcessingQueue(
+                    f"Selfplayer-{i} predict_response_q")
+                for i in range(self.config.selfplay.selfplayprocesses)}
             queues = [logging_q, predict_request_q, monitoring_q] + list(
                 predict_response_qs.values())
 
@@ -261,8 +429,6 @@ class GameGym():
                 p.start()
 
             LOGGER.info("idling until endevent is signaled...")
-            current_threadname = threading.currentThread().getName()
-
             t0_livesignal = 0
             t0_start = time()
             while not endevent.is_set():
@@ -275,8 +441,8 @@ class GameGym():
                          for p in processes})
                     monitoring_q.put(data)
                 sleep(1)
-
-                if runtime_in_sec != None:
+                
+                if runtime_in_sec != None: # check in case the run time has been limited
                     if time() - t0_start > runtime_in_sec:
                         endevent.set()
             # ----------------------------------------------------------------------
@@ -314,12 +480,12 @@ class GameGym():
                 timestamp, sender, label, content = data
 
                 if label == gymdata.MonitoringLabel.LIVESIGNAL:
-                    filepath = f"{self.path.monitoring_folder}/livesignal.json"
+                    filepath = f"{self.path.monitoring_folder}/livesignal.stats"
                     with open(filepath, 'a+') as f:
                         f.write(f"{timestamp}|{json.dumps(content)}\n")
 
                 if label == gymdata.MonitoringLabel.SELFPLAYSTATS:
-                    filepath = f"{self.path.monitoring_folder}/{sender}_stats.json"
+                    filepath = f"{self.path.monitoring_folder}/{sender}_stats.stats"
                     with open(filepath, 'a+') as f:
                         f.write(f"{timestamp}|{json.dumps(content)}\n")
 

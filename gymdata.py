@@ -65,22 +65,33 @@ class PredictConfig(JSONSerializableDataClass):
     batchsize: int
     trygetbatchsize_timeout = 0.1
     logging: LoggingConfig = LoggingConfig()
-    use_gpu: bool = True
+    use_gpu: bool = False
     gpu_memorylimit: int = None
 
 
 @dataclass
 class SelfPlayConfig(JSONSerializableDataClass):
     """Configuration for the Selfplayer subprocess"""
-    selfplayprocesses: int
-    searchthreadcount: int
-    searchcount: int
+    selfplayprocesses: int = 1
+    searchthreadcount: int = 10
+    searchcount: int = 100
     exploration_const: float = 2.0
     virtualloss: float = 0.1
     sleeptime_blocked_select: float = 0.1
     temperature: float = 1.0
     gamelog_dump_threshold: int = 10
     freq_statssignal: int = 60
+    logging: LoggingConfig = LoggingConfig()
+
+
+@dataclass
+class EvaluateConfig(JSONSerializableDataClass):
+    """Configuration for the Predictor subprocess"""
+    model1_savefolderpath: str
+    model1_weightsfolderpath: str
+    model2_savefolderpath: str
+    model2_weightsfolderpath: str
+    playconfig: SelfPlayConfig = SelfPlayConfig()
     logging: LoggingConfig = LoggingConfig()
 
 
